@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { PlayHistoryEntry, RepeatMode, Song } from '../types';
 import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Shuffle, Repeat, Repeat1, ListPlus, SlidersHorizontal, Download, Check, Loader2 } from 'lucide-react';
+import { PhoneShare } from './PhoneShare';
 
 interface PlaylistItem {
   id: string;
@@ -379,6 +380,7 @@ export function Player({
         >
           <Shuffle size={20} />
         </button>
+        <PhoneShare />
         <button
           onClick={() => onRepeatModeChange?.(repeatMode === 'context' ? 'off' : 'context')}
           className={`p-1.5 rounded transition ${repeatMode === 'context' ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'}`}
