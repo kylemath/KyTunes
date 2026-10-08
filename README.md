@@ -2,7 +2,7 @@
 
 A music player for files on your computer. Another computer or a phone runs the same app and streams songs from the one machine that holds the library. Nothing is copied until you tap **Keep** on a song.
 
-**[Public demo](https://kylemath.github.io/MusicPlayer)** — three short original tracks, no sign-in. That page does not reach your home library.
+**[Public demo](https://kylemath.github.io/KyTunes)** — three short original tracks, no sign-in. That page does not reach your home library.
 
 ## Play a folder on this computer
 
@@ -13,7 +13,7 @@ npm run dev
 
 Open the address Vite prints and choose **Select music folder**. This uses the file picker in desktop Chrome. On macOS, pointing it at `~/Music` skips GarageBand, Logic, Audio Music Apps, and MainStage. Those are app folders, and GarageBand is often blocked by the system. Other unreadable folders are skipped instead of stopping the scan.
 
-`npm run launch` starts the dev server for the installed Mac app. `npm run create-app` builds that launcher.
+`npm run launch`, and the KyTunes Mac app from `npm run create-app`, start the library server next to the player. A dev server that is already running on port 5173 is left up. Quit the app and only the processes that launch started are stopped.
 
 ## Library server
 
