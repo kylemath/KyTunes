@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "library": "node server/library-server.mjs",
+    "share": "./scripts/tailscale-serve.sh",
     "launch": "./scripts/launch.sh",
     "create-app": "./scripts/create-app.sh",
     "install-app": "./scripts/create-app.sh --install"
@@ -27,6 +28,7 @@
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/react-window": "^1.8.8",
@@ -36,6 +38,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "qrcode": "^1.5.4",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
     "vite": "^7.3.1",

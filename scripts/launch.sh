@@ -69,31 +69,81 @@ or:
   exit 1
 fi
 
+SERVER_PID=""
+DEV_STARTED=0
+LIBRARY_PID=""
+LIBRARY_STARTED=0
+
 # ---------- Clean up on exit ----------
+# Only processes this launch started are stopped. A dev server or library
+# server that was already running is left alone.
 cleanup() {
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+  if [ "$DEV_STARTED" = "1" ] && [ -n "$SERVER_PID" ]; then
+    kill "$SERVER_PID" 2>/dev/null
+  fi
+  if [ "$LIBRARY_STARTED" = "1" ] && [ -n "$LIBRARY_PID" ]; then
+    kill "$LIBRARY_PID" 2>/dev/null
+  fi
 }
 trap cleanup EXIT INT TERM
 
 cd "$PROJECT_DIR" || exit 1
 
-# Kill stale server on our port
-STALE_PID=$(lsof -i ":$PORT" -sTCP:LISTEN -t 2>/dev/null)
-if [ -n "$STALE_PID" ]; then
-  echo "Killing stale server PID $STALE_PID on port $PORT"
-  kill "$STALE_PID" 2>/dev/null
-  sleep 1
+# ---------- Library server ----------
+# Other devices stream from this process. It uses library.config.json, so the
+# password is not passed on the command line.
+LIBRARY_PORT=8787
+if [ -f "$PROJECT_DIR/library.config.json" ]; then
+  cfg_port=$(node -e 'try{const c=require("./library.config.json"); if(typeof c.port==="number") process.stdout.write(String(c.port))}catch(e){}')
+  if [ -n "$cfg_port" ]; then
+    LIBRARY_PORT="$cfg_port"
+  fi
+  if curl -sf "http://127.0.0.1:$LIBRARY_PORT/api/health" >/dev/null 2>&1; then
+    echo "Library server already running on port $LIBRARY_PORT"
+  else
+    echo "Starting library server on port $LIBRARY_PORT"
+    node server/library-server.mjs &
+    LIBRARY_PID=$!
+    LIBRARY_STARTED=1
+    for i in $(seq 1 40); do
+      if curl -sf "http://127.0.0.1:$LIBRARY_PORT/api/health" >/dev/null 2>&1; then
+        echo "Library server is up after ~$((i / 4))s"
+        break
+      fi
+      if ! kill -0 "$LIBRARY_PID" 2>/dev/null; then
+        echo "Library server exited"
+        break
+      fi
+      sleep 0.25
+    done
+    if ! curl -sf "http://127.0.0.1:$LIBRARY_PORT/api/health" >/dev/null 2>&1; then
+      echo "Library server did not become ready"
+      osascript -e "display dialog \"KyTunes opened, but the library server did not start. Other devices will not be able to stream. Check .localplayer.log in the project folder.\" with title \"$APP_NAME\" buttons {\"OK\"} default button \"OK\" with icon caution" &
+    fi
+  fi
+else
+  echo "No library.config.json — skipping the library server"
 fi
 
-# ---------- Start Vite dev server ----------
-npm run dev -- --port "$PORT" >> "$LOG_FILE" 2>&1 &
-SERVER_PID=$!
-echo "Server PID: $SERVER_PID"
+# ---------- Vite dev server ----------
+# Keep a player that is already running. The library server is additional.
+if curl -sf "$URL" >/dev/null 2>&1; then
+  echo "Dev server already running on port $PORT — leaving it up"
+else
+  echo "Starting dev server on port $PORT"
+  npm run dev -- --port "$PORT" >> "$LOG_FILE" 2>&1 &
+  SERVER_PID=$!
+  DEV_STARTED=1
+fi
 
 echo "Waiting for server on port $PORT..."
 for i in $(seq 1 30); do
-  if curl -s "$URL" >/dev/null 2>&1; then
-    echo "Server is up after ~$((i / 2))s"
+  if curl -sf "$URL" >/dev/null 2>&1; then
+    echo "Dev server is up after ~$((i / 2))s"
+    break
+  fi
+  if [ "$DEV_STARTED" = "1" ] && ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    echo "Dev server exited"
     break
   fi
   sleep 0.5
@@ -142,4 +192,11 @@ else
 Then always launch via the KyTunes.app (from create-app) — not the PWA directly — so the server starts first.\" with title \"$APP_NAME — Install as App\" buttons {\"OK\"} default button \"OK\"" &
 fi
 
-wait "$SERVER_PID"
+# Stay alive while a server this launch started is running, so quitting the
+# app stops only that process. An already-running dev server is not waited on
+# and is not stopped.
+if [ "$DEV_STARTED" = "1" ]; then
+  wait "$SERVER_PID"
+elif [ "$LIBRARY_STARTED" = "1" ]; then
+  wait "$LIBRARY_PID"
+fi

@@ -11,6 +11,7 @@ import { Player } from './components/Player';
 import { Sidebar } from './components/Sidebar';
 import { Library } from './components/Library';
 import { LibraryConnect } from './components/LibraryConnect';
+import { PhoneShare } from './components/PhoneShare';
 import { Visualizer } from './components/Visualizer';
 import { SongDetailsPane } from './components/NowPlaying';
 import { ResizeHandle } from './components/ResizeHandle';
@@ -936,6 +937,7 @@ function App() {
 
   if (!libraryConnected) {
     return (
+      <>
       <LibraryConnect
         canPickFolder={canPickFolder}
         hasSavedFolder={!!dirHandle}
@@ -947,8 +949,10 @@ function App() {
         onConnect={(baseUrl, password) => { void connectRemote(baseUrl, password); }}
         onPlayDemo={openDemo}
       />
-    );
-  }
+      <PhoneShare />
+    </>
+  );
+}
 
   // ─── Main layout ───────────────────────────────────
   return (
@@ -1150,6 +1154,7 @@ function App() {
           </button>
         </nav>
       )}
+      <PhoneShare />
     </div>
   );
 }
