@@ -1,17 +1,31 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { FilterType, HistorySortColumn, HistoryViewItem, PlayHistoryEntry, PlayHistoryState, RepeatMode, Song, SongSortColumn, SortDirection } from './types';
-import { getDirectoryHandle, saveDirectoryHandle, getSongsCache, saveSongsCache, getPlaylists, savePlaylists, getPlayHistory, savePlayHistory, getArtworkBlob, saveArtworkBlob, getArtistUrl, saveArtistUrl, getArtistGroupOverrides, saveArtistGroupOverrides, getQueue, saveQueue, getPlaybackPreferences, savePlaybackPreferences } from './db';
+import { getDirectoryHandle, saveDirectoryHandle, getSongsCache, saveSongsCache, getPlaylists, savePlaylists, getPlayHistory, savePlayHistory, getArtworkBlob, saveArtworkBlob, getArtistUrl, saveArtistUrl, getArtistGroupOverrides, saveArtistGroupOverrides, getQueue, saveQueue, getPlaybackPreferences, savePlaybackPreferences, getLibrarySource, saveLibrarySource, getRemoteSession, saveRemoteSession, getRemoteSongsCache, saveRemoteSongsCache, getKeptSongIds, getKeptAudio, saveKeptAudio, deleteKeptAudio } from './db';
 import { getCanonicalArtist, artistGroupKey } from './lib/artistNorm';
 import type { AlbumArtworkResult } from './lib/artwork';
 import { searchArtistImage, searchAlbumArtwork } from './lib/artwork';
 import { collectFiles, parseMetadataInBackground } from './lib/scanner';
+import { attachRemote, downloadRemoteSong, fetchRemoteLibrary, loginRemote, normalizeServerUrl, probeSameOriginLibrary, requestRemoteRescan, RemoteAuthError, type RemoteSession } from './lib/remoteLibrary';
+import { demoSongs, isGithubPages } from './lib/demoLibrary';
 import { Player } from './components/Player';
 import { Sidebar } from './components/Sidebar';
 import { Library } from './components/Library';
+import { LibraryConnect } from './components/LibraryConnect';
 import { Visualizer } from './components/Visualizer';
 import { SongDetailsPane } from './components/NowPlaying';
 import { ResizeHandle } from './components/ResizeHandle';
-import { FolderOpen, Loader2, Activity } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
+
+function useNarrow() {
+  const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 767px)').matches);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 767px)');
+    const onChange = () => setNarrow(media.matches);
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
+  return narrow;
+}
 
 function shuffleArray<T>(arr: T[]): T[] {
   const out = [...arr];
@@ -47,6 +61,17 @@ function App() {
   const [loadingStatus, setLoadingStatus] = useState('');
   const [hasPermission, setHasPermission] = useState(false);
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle | null>(null);
+  const [libraryMode, setLibraryMode] = useState<'local' | 'remote' | 'demo' | 'choose' | null>(null);
+  const [booting, setBooting] = useState(true);
+  const [remoteSession, setRemoteSession] = useState<RemoteSession | null>(null);
+  const [savedServerUrl, setSavedServerUrl] = useState('');
+  const [sameOriginReady, setSameOriginReady] = useState(false);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [keptIds, setKeptIds] = useState<Set<string>>(() => new Set());
+  const [keepBusy, setKeepBusy] = useState(false);
+  const [mobilePane, setMobilePane] = useState<'songs' | 'browse'>('songs');
+  const narrow = useNarrow();
 
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [selectedSong, setSelectedSong] = useState<Song | null>(null);
@@ -76,8 +101,8 @@ function App() {
   const [artistGroupOverrides, setArtistGroupOverridesState] = useState<Record<string, string>>({});
 
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
-  const [showVisualizer, setShowVisualizer] = useState(true);
-  const [showSongDetails, setShowSongDetails] = useState(true);
+  const [showVisualizer, setShowVisualizer] = useState(false);
+  const [showSongDetails, setShowSongDetails] = useState(false);
   const [isVizMaximized, setIsVizMaximized] = useState(false);
 
   const seekRef = useRef<((time: number) => void) | null>(null);
@@ -148,37 +173,135 @@ function App() {
     }
   }, []);
 
+  const applyRemoteLibrary = useCallback((
+    session: RemoteSession,
+    nextSongs: Song[],
+    payload?: { scanning: boolean; enriching: boolean; enrichDone: number; enrichTotal: number },
+  ) => {
+    setSongs(attachRemote(session, nextSongs));
+    setRemoteSession(session);
+    setLibraryMode('remote');
+    setHasPermission(true);
+    if (payload && (payload.scanning || payload.enriching)) {
+      setLoading(payload.scanning && nextSongs.length === 0);
+      setLoadingStatus(
+        payload.scanning && nextSongs.length === 0
+          ? 'Scanning the library…'
+          : `Reading tags ${payload.enrichDone} / ${payload.enrichTotal}`,
+      );
+    } else {
+      setLoading(false);
+      setLoadingStatus('');
+    }
+  }, []);
+
+  const refreshRemote = useCallback(async (session: RemoteSession, rescan = false) => {
+    if (rescan) await requestRemoteRescan(session);
+    const payload = await fetchRemoteLibrary(session);
+    applyRemoteLibrary(session, payload.songs, payload);
+    await saveRemoteSongsCache(payload.songs);
+  }, [applyRemoteLibrary]);
+
   useEffect(() => {
     async function init() {
-      const handle = await getDirectoryHandle();
-      if (handle) {
-        setDirHandle(handle);
-        const perm = await (handle as any).queryPermission({ mode: 'read' });
-        if (perm === 'granted') {
-          setHasPermission(true);
-          const cache = await getSongsCache();
-          if (cache && cache.length > 0) {
-            setSongs(cache);
+      try {
+        const kept = await getKeptSongIds();
+        setKeptIds(new Set(kept));
+        setSameOriginReady(await probeSameOriginLibrary());
+        const source = await getLibrarySource();
+        const session = await getRemoteSession();
+        if (session?.baseUrl) setSavedServerUrl(session.baseUrl);
+
+        if (source === 'remote' && session && session.expiresAt > Date.now()) {
+          const cached = await getRemoteSongsCache();
+          if (cached && cached.length > 0) applyRemoteLibrary(session, cached);
+          try {
+            const payload = await fetchRemoteLibrary(session);
+            applyRemoteLibrary(session, payload.songs, payload);
+            await saveRemoteSongsCache(payload.songs);
+          } catch (error) {
+            if (error instanceof RemoteAuthError || !(cached && cached.length > 0)) {
+              setLibraryMode('choose');
+              setHasPermission(false);
+              setConnectError(error instanceof Error ? error.message : 'Could not reach the library server.');
+            }
+          }
+        } else if (source === 'choose' || (source === 'remote' && (!session || session.expiresAt <= Date.now()))) {
+          const handle = await getDirectoryHandle();
+          if (handle) setDirHandle(handle);
+          setLibraryMode('choose');
+          if (source === 'remote') setConnectError('Sign in again to keep streaming.');
+        } else {
+          const handle = await getDirectoryHandle();
+          if (handle) {
+            setDirHandle(handle);
+            setLibraryMode('local');
+            if (source !== 'local') await saveLibrarySource('local');
+            const perm = await (handle as any).queryPermission({ mode: 'read' });
+            if (perm === 'granted') {
+              setHasPermission(true);
+              const cache = await getSongsCache();
+              if (cache && cache.length > 0) setSongs(cache);
+              else await doScan(handle);
+            }
+          } else if (isGithubPages()) {
+            setSongs(demoSongs());
+            setLibraryMode('demo');
+            setHasPermission(true);
           } else {
-            await doScan(handle);
+            setLibraryMode('choose');
           }
         }
+
+        const list = await getPlaylists();
+        setPlaylistsState(list);
+        const history = await getPlayHistory();
+        setPlayHistoryState(history);
+        const overrides = await getArtistGroupOverrides();
+        setArtistGroupOverridesState(overrides);
+        const q = await getQueue();
+        setUserQueueState(q);
+        const playbackPreferences = await getPlaybackPreferences();
+        setShuffleOn(playbackPreferences.shuffleOn);
+        setRepeatMode(playbackPreferences.repeatMode);
+        setShowSongDetails(playbackPreferences.showSongDetails);
+      } finally {
+        setBooting(false);
       }
-      const list = await getPlaylists();
-      setPlaylistsState(list);
-      const history = await getPlayHistory();
-      setPlayHistoryState(history);
-      const overrides = await getArtistGroupOverrides();
-      setArtistGroupOverridesState(overrides);
-      const q = await getQueue();
-      setUserQueueState(q);
-      const playbackPreferences = await getPlaybackPreferences();
-      setShuffleOn(playbackPreferences.shuffleOn);
-      setRepeatMode(playbackPreferences.repeatMode);
-      setShowSongDetails(playbackPreferences.showSongDetails);
     }
     init();
-  }, [doScan]);
+  }, [doScan, applyRemoteLibrary]);
+
+  useEffect(() => {
+    if (libraryMode !== 'remote' || !remoteSession) return;
+    let cancelled = false;
+    let timer = 0;
+    const tick = async () => {
+      try {
+        const payload = await fetchRemoteLibrary(remoteSession);
+        if (cancelled) return;
+        applyRemoteLibrary(remoteSession, payload.songs, payload);
+        if (!payload.scanning && !payload.enriching) {
+          await saveRemoteSongsCache(payload.songs);
+        } else {
+          timer = window.setTimeout(tick, 2500);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof RemoteAuthError) {
+          setConnectError('Sign in again to keep streaming.');
+          setLibraryMode('choose');
+          setHasPermission(false);
+          setLoading(false);
+        }
+      }
+    };
+    timer = window.setTimeout(tick, 2500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [libraryMode, remoteSession, applyRemoteLibrary]);
 
   useEffect(() => {
     savePlaybackPreferences({ shuffleOn, repeatMode, showSongDetails });
@@ -189,6 +312,9 @@ function App() {
     const perm = await (dirHandle as any).requestPermission({ mode: 'read' });
     if (perm === 'granted') {
       setHasPermission(true);
+      setLibraryMode('local');
+      setConnectError(null);
+      await saveLibrarySource('local');
       const cache = await getSongsCache();
       if (cache && cache.length > 0) {
         setSongs(cache);
@@ -203,12 +329,127 @@ function App() {
       const handle = await (window as any).showDirectoryPicker();
       setDirHandle(handle);
       await saveDirectoryHandle(handle);
+      await saveLibrarySource('local');
+      setLibraryMode('local');
       setHasPermission(true);
+      setConnectError(null);
       await doScan(handle);
     } catch (e) {
+      if ((e as { name?: string }).name === 'AbortError') return;
       console.error(e);
     }
   };
+
+  const chooseFolder = async () => {
+    if (!dirHandle) {
+      await selectFolder();
+      return;
+    }
+    const perm = await (dirHandle as any).queryPermission({ mode: 'read' });
+    if (perm === 'granted') {
+      setHasPermission(true);
+      setLibraryMode('local');
+      setConnectError(null);
+      await saveLibrarySource('local');
+      const cache = await getSongsCache();
+      if (cache && cache.length > 0) setSongs(cache);
+      else await doScan(dirHandle);
+      return;
+    }
+    await requestPermission();
+  };
+
+  const connectRemote = async (baseUrlInput: string, password: string) => {
+    setConnecting(true);
+    setConnectError(null);
+    try {
+      const baseUrl = baseUrlInput ? normalizeServerUrl(baseUrlInput) : '';
+      const session = await loginRemote(baseUrl, password);
+      await saveRemoteSession(session);
+      await saveLibrarySource('remote');
+      setSavedServerUrl(session.baseUrl);
+      setLoading(true);
+      setLoadingStatus('Loading library…');
+      const payload = await fetchRemoteLibrary(session);
+      applyRemoteLibrary(session, payload.songs, payload);
+      await saveRemoteSongsCache(payload.songs);
+    } catch (error) {
+      setLoading(false);
+      setLoadingStatus('');
+      setConnectError(error instanceof Error ? error.message : 'Could not connect.');
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const openDemo = () => {
+    setSongs(demoSongs());
+    setLibraryMode('demo');
+    setHasPermission(true);
+    setConnectError(null);
+    setLoading(false);
+    setLoadingStatus('');
+    setCurrentSong(null);
+    setIsPlaying(false);
+  };
+
+  const chooseDifferentLibrary = () => {
+    abortRef.current?.abort();
+    setIsPlaying(false);
+    setCurrentSong(null);
+    setLoading(false);
+    setLoadingStatus('');
+    setHasPermission(false);
+    setLibraryMode('choose');
+    void saveLibrarySource('choose');
+  };
+
+  const resolveAudioUrl = useCallback(async (song: Song) => {
+    if (song.source === 'remote') {
+      const kept = await getKeptAudio(song.id);
+      if (kept) return { url: URL.createObjectURL(kept), revoke: true };
+      if (song.streamUrl) return { url: song.streamUrl, revoke: false };
+    }
+    if (song.fileHandle) {
+      const file = await song.fileHandle.getFile();
+      return { url: URL.createObjectURL(file), revoke: true };
+    }
+    if (song.streamUrl) return { url: song.streamUrl, revoke: false };
+    throw new Error('No audio for this song');
+  }, []);
+
+  const toggleKeep = useCallback(async () => {
+    if (!currentSong || currentSong.source !== 'remote' || !remoteSession || keepBusy) return;
+    if (keptIds.has(currentSong.id)) {
+      await deleteKeptAudio(currentSong.id);
+      setKeptIds((prev) => {
+        const next = new Set(prev);
+        next.delete(currentSong.id);
+        return next;
+      });
+      return;
+    }
+    setKeepBusy(true);
+    setLoadingStatus('Saving a copy on this device…');
+    try {
+      const blob = await downloadRemoteSong(remoteSession, currentSong.id, (loaded, total) => {
+        if (total > 0) {
+          const pct = Math.min(100, Math.round((loaded / total) * 100));
+          setLoadingStatus(`Saving a copy on this device… ${pct}%`);
+        }
+      });
+      await saveKeptAudio(currentSong.id, blob);
+      setKeptIds((prev) => new Set(prev).add(currentSong.id));
+      setLoadingStatus('');
+    } catch (error) {
+      const name = (error as { name?: string }).name;
+      setLoadingStatus(name === 'QuotaExceededError'
+        ? 'Not enough space on this device to keep that song.'
+        : (error instanceof Error ? error.message : 'Could not save that song.'));
+    } finally {
+      setKeepBusy(false);
+    }
+  }, [currentSong, remoteSession, keepBusy, keptIds]);
 
   const songMap = useMemo(() => new Map(songs.map(song => [song.id, song])), [songs]);
   const displaySong = selectedSong ?? currentSong;
@@ -681,28 +922,31 @@ function App() {
   }, []);
 
   // ─── Welcome screen ────────────────────────────────
-  if (!hasPermission || !dirHandle) {
+  const libraryConnected = libraryMode === 'remote' || libraryMode === 'demo' || (libraryMode === 'local' && hasPermission && !!dirHandle);
+  const canPickFolder = 'showDirectoryPicker' in window;
+  const mobileCover = narrow && (showVisualizer || (showSongDetails && !!displaySong));
+
+  if (booting || libraryMode === null) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-gray-50 text-gray-800 dark:bg-gray-900 dark:text-gray-100">
-        <div className="p-8 bg-white dark:bg-gray-800 rounded-xl shadow-lg flex flex-col items-center max-w-md text-center">
-          <div className="w-16 h-16 bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-300 rounded-full flex items-center justify-center mb-6">
-            <FolderOpen size={32} />
-          </div>
-          <h1 className="text-2xl font-bold mb-2">Welcome to Local Player</h1>
-          <p className="text-gray-600 dark:text-gray-400 mb-8">
-            Select your music folder to get started. We'll read your local audio files and organize them automatically.
-          </p>
-          {dirHandle ? (
-            <button onClick={requestPermission} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition-colors w-full">
-              Grant Permission to Music Folder
-            </button>
-          ) : (
-            <button onClick={selectFolder} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition-colors w-full">
-              Select Music Folder
-            </button>
-          )}
-        </div>
+      <div className="flex h-screen items-center justify-center bg-gray-50 text-gray-800 dark:bg-gray-900 dark:text-gray-100">
+        <Loader2 className="w-10 h-10 animate-spin text-blue-500" />
       </div>
+    );
+  }
+
+  if (!libraryConnected) {
+    return (
+      <LibraryConnect
+        canPickFolder={canPickFolder}
+        hasSavedFolder={!!dirHandle}
+        sameOriginReady={sameOriginReady}
+        savedServerUrl={savedServerUrl}
+        error={connectError}
+        connecting={connecting}
+        onChooseFolder={() => { void chooseFolder(); }}
+        onConnect={(baseUrl, password) => { void connectRemote(baseUrl, password); }}
+        onPlayDemo={openDemo}
+      />
     );
   }
 
@@ -737,12 +981,17 @@ function App() {
         seekRef={seekRef}
         showSongDetails={showSongDetails}
         onSongDetailsToggle={() => setShowSongDetails(v => !v)}
+        showVisualizer={showVisualizer}
+        onVisualizerToggle={() => setShowVisualizer(v => !v)}
+        keepState={currentSong?.source === 'remote' ? (keepBusy ? 'saving' : keptIds.has(currentSong.id) ? 'kept' : 'available') : undefined}
+        onToggleKeep={() => { void toggleKeep(); }}
+        resolveAudioUrl={resolveAudioUrl}
       />
 
       <div className={`flex flex-1 overflow-hidden ${isVizMaximized ? 'flex-col' : ''}`}>
         {/* ── Sidebar (hidden when viz maximized) ── */}
-        {!isVizMaximized && (
-        <div className="shrink-0 h-full border-r border-gray-300 dark:border-gray-800 flex flex-col" style={{ width: sidebarW }}>
+        {!isVizMaximized && !mobileCover && (!narrow || mobilePane === 'browse') && (
+        <div className={`${narrow ? 'flex-1 min-w-0' : 'shrink-0'} h-full border-r border-gray-300 dark:border-gray-800 flex flex-col`} style={narrow ? undefined : { width: sidebarW }}>
           <Sidebar
             songs={songs}
             filterType={filterType}
@@ -768,10 +1017,10 @@ function App() {
         </div>
         )}
 
-        {!isVizMaximized && <ResizeHandle onDrag={handleSidebarDrag} />}
+        {!narrow && !isVizMaximized && !mobileCover && <ResizeHandle onDrag={handleSidebarDrag} />}
 
         {/* ── Library (hidden when viz maximized) ── */}
-        {!isVizMaximized && (
+        {!isVizMaximized && !mobileCover && (!narrow || mobilePane === 'songs') && (
         <div className="flex-1 flex flex-col relative bg-white dark:bg-[#121212] min-w-[50px] h-full overflow-hidden">
           {loading && (
             <div className="absolute inset-0 z-10 bg-white/80 dark:bg-black/80 flex flex-col items-center justify-center backdrop-blur-sm">
@@ -780,16 +1029,13 @@ function App() {
             </div>
           )}
           <div className="flex items-center px-4 py-1 bg-gray-50 dark:bg-[#1a1a1a] border-b border-gray-200 dark:border-gray-800 shrink-0">
-            <span className="flex-1 text-xs text-gray-500">
+            <span className="flex-1 text-xs text-gray-500 truncate">
               {loadingStatus || (filterType === 'History' ? `${filteredHistoryItems.length} plays` : filterType === 'Queue' ? `${queueSongs.length} queued` : `${songs.length} songs`)}
             </span>
-            <button
-              onClick={() => setShowVisualizer(v => !v)}
-              className={`p-1 rounded transition-colors ${showVisualizer ? 'text-blue-500 bg-blue-500/10' : 'text-gray-400 hover:text-gray-200'}`}
-              title="Toggle Visualizer"
-            >
-              <Activity size={14} />
+            <button type="button" onClick={chooseDifferentLibrary} className="text-xs text-gray-500 hover:text-blue-500 shrink-0 ml-3">
+              Change library
             </button>
+   
           </div>
           <Library
             songs={visibleSongs}
@@ -812,7 +1058,22 @@ function App() {
             currentSongId={currentSong?.id}
             selectedSongId={selectedSong?.id}
             contextSongId={currentVisibleIndex >= 0 ? currentSong?.id : undefined}
-            onRescan={() => doScan(dirHandle)}
+            onRescan={() => {
+              if (libraryMode === 'demo') {
+                setSongs(demoSongs());
+                return;
+              }
+              if (libraryMode === 'remote' && remoteSession) {
+                setLoadingStatus('Rescanning library…');
+                void refreshRemote(remoteSession, true).catch((error: unknown) => {
+                  setLoadingStatus(error instanceof Error ? error.message : 'Rescan failed');
+                });
+                return;
+              }
+              if (dirHandle) void doScan(dirHandle);
+            }}
+            compact={narrow}
+            keptIds={keptIds}
           />
         </div>
         )}
@@ -820,8 +1081,8 @@ function App() {
         {/* ── Song Details pane (hidden when viz maximized) ── */}
         {!isVizMaximized && showSongDetails && displaySong && (
           <>
-            <ResizeHandle onDrag={handleDetailsPanelDrag} />
-            <div className="shrink-0 h-full" style={{ width: detailsPanelW }}>
+            {!narrow && <ResizeHandle onDrag={handleDetailsPanelDrag} />}
+            <div className={narrow ? 'flex-1 min-w-0 h-full' : 'shrink-0 h-full'} style={narrow ? undefined : { width: detailsPanelW }}>
               <SongDetailsPane
                 song={displaySong}
                 isCurrentSong={displaySong.id === currentSong?.id}
@@ -850,10 +1111,10 @@ function App() {
         {/* ── Visualizer ── */}
         {showVisualizer && (
           <>
-            {!isVizMaximized && <ResizeHandle onDrag={handleLibraryVizDrag} />}
+            {!narrow && !isVizMaximized && <ResizeHandle onDrag={handleLibraryVizDrag} />}
             <div
-              className={`h-full flex flex-col ${isVizMaximized ? 'flex-1 min-w-0' : 'shrink-0'}`}
-              style={isVizMaximized ? undefined : { width: vizPanelW }}
+              className={`h-full flex flex-col ${isVizMaximized || narrow ? 'flex-1 min-w-0' : 'shrink-0'}`}
+              style={isVizMaximized || narrow ? undefined : { width: vizPanelW }}
             >
               <Visualizer
                 analyser={analyser}
@@ -864,6 +1125,31 @@ function App() {
           </>
         )}
       </div>
+      {narrow && !isVizMaximized && (
+        <nav className="shrink-0 flex border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#1a1a1a] pb-[env(safe-area-inset-bottom)]">
+          <button
+            type="button"
+            className={`flex-1 py-3 text-sm ${mobilePane === 'songs' && !showSongDetails ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500'}`}
+            onClick={() => { setMobilePane('songs'); setShowSongDetails(false); setShowVisualizer(false); }}
+          >
+            Songs
+          </button>
+          <button
+            type="button"
+            className={`flex-1 py-3 text-sm ${mobilePane === 'browse' && !showSongDetails ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500'}`}
+            onClick={() => { setMobilePane('browse'); setShowSongDetails(false); setShowVisualizer(false); }}
+          >
+            Browse
+          </button>
+          <button
+            type="button"
+            className={`flex-1 py-3 text-sm ${showSongDetails ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500'}`}
+            onClick={() => { setShowSongDetails(true); setShowVisualizer(false); }}
+          >
+            Details
+          </button>
+        </nav>
+      )}
     </div>
   );
 }

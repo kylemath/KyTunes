@@ -1,3 +1,5 @@
+export type SongSource = 'local' | 'remote';
+
 export interface Song {
   id: string; // File path or relative path
   title: string;
@@ -8,7 +10,12 @@ export interface Song {
   trackNumber?: number;
   year?: number;
   genre?: string;
-  fileHandle: FileSystemFileHandle;
+  /** Present for songs read from a folder on this computer. */
+  fileHandle?: FileSystemFileHandle;
+  /** `remote` songs stream from the library server until kept on this device. */
+  source?: SongSource;
+  /** Authenticated stream URL. Rebuilt when the session changes, not stored as the cache. */
+  streamUrl?: string;
   // Extended tags
   albumArtist?: string;
   composer?: string;

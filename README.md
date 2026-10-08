@@ -1,82 +1,55 @@
-# React + TypeScript + Vite
+# KyTunes
 
-🚀 **[Live Demo](https://kylemath.github.io/MusicPlayer)** 🚀
+A music player for files on your computer. Another computer or a phone runs the same app and streams songs from the one machine that holds the library. Nothing is copied until you tap **Keep** on a song.
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**[Public demo](https://kylemath.github.io/MusicPlayer)** — three short original tracks, no sign-in. That page does not reach your home library.
 
-Currently, two official plugins are available:
+## Play a folder on this computer
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Open the address Vite prints and choose **Select music folder**. This uses the file picker in desktop Chrome. On macOS, pointing it at `~/Music` skips GarageBand, Logic, Audio Music Apps, and MainStage. Those are app folders, and GarageBand is often blocked by the system. Other unreadable folders are skipped instead of stopping the scan.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+`npm run launch` starts the dev server for the installed Mac app. `npm run create-app` builds that launcher.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Library server
+
+On the computer that has the music:
+
+```bash
+npm run library -- --dir ~/Music --password 'choose-a-password'
 ```
 
-## Preview
+The password is stored only as a hash in `library.config.json`, which is not committed. The process listens on port 8787 and prints where it can be reached. Use that printed address from other devices. Do not put a home address in this repo.
 
-<p align="center">
-  <img src="screenshot.png" alt="Project screenshot" width="720" />
-</p>
+The server sends the song list and the audio. Seeking requests a slice of the file. **Keep** is what saves a whole song on the device you are using.
 
+## Another computer
+
+Clone this project, run `npm install` and `npm run dev`, then choose **Connect to library server**. Enter the address printed by the library machine, for example `http://<library-computer>:8787`, and the password. That computer plays from its own copy of the app. Only the catalog and the audio cross the network.
+
+## Phone
+
+There is no app-store install. Open the player in the phone browser, then use **Add to Home Screen**.
+
+On the same Wi-Fi, with this project running:
+
+- `npm run dev` prints an address the phone can open. The interface loads from the dev server, and the songs come from the library server.
+- `npm run build` once, then the library server on port 8787 can serve the player page as well as the audio. The phone can open that address without the dev server.
+
+A home-screen install that behaves as its own app needs HTTPS. Away from home, install Tailscale on the library machine and the phone, run `tailscale serve 8787`, open that `https://` address, and add it to the home screen. A plain `http://` address on your network still plays in the browser.
+
+Android Chrome cannot browse an arbitrary music folder. The phone streams, and **Keep** stores the songs you want on the device.
+
+## Public demo
+
+The GitHub Pages site plays the tracks in `public/demo/`. They are short original tones generated by `node scripts/make-demo-audio.mjs`, so the public repo does not contain anyone's record collection. Replace those files only with audio you have the right to publish.
+
+Opening that site does not connect to your library. The page is served over HTTPS, and browsers will not let it call a private `http://` address on your home network. A visitor also should not be sent to your music.
+
+The connect form is still on that page for an `https://` library address you can actually reach, such as Tailscale Serve while that computer is on your tailnet. Typing a home `http://` address there will fail. For your own machines, run the app locally and connect, as above.
+
+Pages deploys with GitHub Actions (`npm run build:pages`) when `main` is pushed. The library server build stays at `/` and still includes the installable app.

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { PlayHistoryEntry, RepeatMode, Song } from '../types';
-import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Shuffle, Repeat, Repeat1, ListPlus, SlidersHorizontal } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Shuffle, Repeat, Repeat1, ListPlus, SlidersHorizontal, Download, Check, Loader2 } from 'lucide-react';
 
 interface PlaylistItem {
   id: string;
@@ -32,6 +32,12 @@ interface PlayerProps {
   onTimeUpdate?: (currentTime: number, duration: number) => void;
   showSongDetails?: boolean;
   onSongDetailsToggle?: () => void;
+  showVisualizer?: boolean;
+  onVisualizerToggle?: () => void;
+  /** How the current remote song is stored. Omitted for a local file. */
+  keepState?: 'available' | 'kept' | 'saving';
+  onToggleKeep?: () => void;
+  resolveAudioUrl?: (song: Song) => Promise<{ url: string; revoke: boolean }>;
 }
 
 // ─── EQ definitions ──────────────────────────────────
@@ -79,6 +85,11 @@ export function Player({
   onTimeUpdate,
   showSongDetails,
   onSongDetailsToggle,
+  showVisualizer,
+  onVisualizerToggle,
+  keepState,
+  onToggleKeep,
+  resolveAudioUrl,
 }: PlayerProps) {
   const audioRef    = useRef<HTMLAudioElement>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -154,22 +165,45 @@ export function Player({
   }, [eqGains]);
 
   useEffect(() => {
-    if (currentSong && audioRef.current) {
-      ensureAudioContext();
-      const loadAudio = async () => {
-        try {
-          const file = await currentSong.fileHandle.getFile();
-          const url = URL.createObjectURL(file);
-          audioRef.current!.src = url;
-          audioRef.current!.volume = volume;
-          if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
-          if (isPlaying) audioRef.current!.play().catch(console.error);
-        } catch (e) { console.error('Failed to load audio', e); }
-      };
-      loadAudio();
-      return () => { if (audioRef.current?.src) URL.revokeObjectURL(audioRef.current.src); };
-    }
-  }, [currentSong]);
+    const song = currentSong;
+    if (!song || !audioRef.current) return;
+    const created: { url: string | null } = { url: null };
+    let cancelled = false;
+    const loadAudio = async () => {
+      try {
+        ensureAudioContext();
+        let url: string | null = null;
+        if (resolveAudioUrl) {
+          const resolved = await resolveAudioUrl(song);
+          if (cancelled) {
+            if (resolved.revoke) URL.revokeObjectURL(resolved.url);
+            return;
+          }
+          url = resolved.url;
+          if (resolved.revoke) created.url = resolved.url;
+        } else if (song.fileHandle) {
+          const file = await song.fileHandle.getFile();
+          if (cancelled) return;
+          url = URL.createObjectURL(file);
+          created.url = url;
+        } else if (song.streamUrl) {
+          url = song.streamUrl;
+        }
+        if (!url || !audioRef.current || cancelled) return;
+        audioRef.current.src = url;
+        audioRef.current.volume = volume;
+        if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
+        if (isPlaying) audioRef.current.play().catch(console.error);
+      } catch (e) { console.error('Failed to load audio', e); }
+    };
+    loadAudio();
+    return () => {
+      cancelled = true;
+      if (created.url) URL.revokeObjectURL(created.url);
+    };
+    // Reload only when the track or its stream address changes, not when tags update.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSong?.id, currentSong?.streamUrl]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -334,10 +368,10 @@ export function Player({
   };
 
   return (
-    <div className="h-20 bg-gray-100 dark:bg-[#181818] flex items-center justify-between px-6 shrink-0 z-20 shadow-sm border-b border-gray-200 dark:border-gray-800">
+    <div className="h-20 max-md:h-auto bg-gray-100 dark:bg-[#181818] grid grid-cols-[minmax(max-content,1fr)_minmax(0,36rem)_minmax(max-content,1fr)] max-md:grid-cols-1 items-center gap-4 max-md:gap-2 px-6 max-md:px-3 max-md:py-2 min-w-0 shrink-0 z-20 shadow-sm border-b border-gray-200 dark:border-gray-800">
 
       {/* ── Transport controls ── */}
-      <div className="flex items-center gap-2 w-1/4">
+      <div className="flex items-center gap-2 max-md:gap-1 max-md:justify-center justify-self-start max-md:justify-self-center max-md:overflow-x-auto">
         <button
           onClick={onShuffleToggle}
           className={`p-1.5 rounded transition ${shuffleOn ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'}`}
@@ -376,7 +410,7 @@ export function Player({
       </div>
 
       {/* ── Center LCD ── */}
-      <div className="flex-1 flex justify-center max-w-xl">
+      <div className="min-w-0 w-full overflow-hidden">
         <div className="bg-[#e4e4e4] dark:bg-[#282828] border border-gray-300 dark:border-black rounded w-full h-14 flex items-center px-2 relative overflow-hidden shadow-inner">
           {currentSong ? (
             <>
@@ -397,7 +431,7 @@ export function Player({
                 )}
               </div>
               {/* Title + artist/album text */}
-              <div className="flex-1 min-w-0 flex flex-col justify-center pr-10">
+              <div className="flex-1 min-w-0 flex flex-col justify-center pr-14">
                 <div className="font-medium text-sm truncate">{currentSong.title}</div>
                 <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 truncate">
                   <button type="button" className="truncate max-w-[45%] hover:text-blue-600 dark:hover:text-blue-400 transition-colors" onClick={() => onArtistClick?.(currentSong.artist)}>{currentSong.artist}</button>
@@ -408,6 +442,18 @@ export function Player({
 
               <div className="absolute bottom-1 left-14 text-[10px] text-gray-500">{fmt(currentTime)}</div>
               <div className="absolute bottom-1 right-4 text-[10px] text-gray-500">-{fmt(duration - currentTime)}</div>
+
+              {keepState && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onToggleKeep?.(); }}
+                  disabled={keepState === 'saving'}
+                  className="absolute top-1 right-8 z-10 p-1 rounded text-gray-500 hover:text-gray-800 hover:bg-gray-200 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-700 disabled:opacity-60"
+                  title={keepState === 'kept' ? 'Saved on this device. Click to remove the copy.' : keepState === 'saving' ? 'Saving on this device…' : 'Keep a copy on this device'}
+                >
+                  {keepState === 'saving' ? <Loader2 size={16} className="animate-spin" /> : keepState === 'kept' ? <Check size={16} /> : <Download size={16} />}
+                </button>
+              )}
 
               {/* Playlist button */}
               {(onAddToPlaylist || onCreatePlaylistAndAdd) && (
@@ -476,13 +522,13 @@ export function Player({
               />
             </>
           ) : (
-            <div className="text-center text-gray-400 dark:text-gray-500 text-sm">Local Player</div>
+            <div className="text-center text-gray-400 dark:text-gray-500 text-sm">KyTunes</div>
           )}
         </div>
       </div>
 
       {/* ── EQ · Volume · Now Playing · Logo ── */}
-      <div className="flex items-center justify-end gap-2 w-1/4">
+      <div className="flex items-center justify-end gap-2 justify-self-end max-md:hidden">
 
         {/* Song Details pane toggle */}
         <button
@@ -496,6 +542,18 @@ export function Player({
           title="Toggle Song Details panel"
         >
           Song Details
+        </button>
+        <button
+        type="button"
+        onClick={onVisualizerToggle}
+        className={`px-2 py-1 text-xs rounded border transition-colors ${
+          showVisualizer
+            ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400'
+            : 'border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'
+      }`}
+        title="Toggle Visualizer"
+      >
+      Visualizer
         </button>
 
         {/* Equalizer */}
@@ -572,15 +630,15 @@ export function Player({
         />
 
         {/* Logo */}
-        <span className="ml-2 relative select-none" aria-label="KyleAmp">
+        <span className="ml-2 relative select-none" aria-label="KyTunes">
           <span className="text-xl font-extrabold tracking-tight" style={{ color: 'transparent', textShadow: '0 1px 1px rgba(255,255,255,0.25)' }}>
-            KyleAmp
+            KyTunes
           </span>
           <span
             className="absolute inset-0 text-xl font-extrabold tracking-tight"
             style={{ background: 'linear-gradient(180deg,#a8a8a8 0%,#6a6a6a 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}
           >
-            KyleAmp
+            KyTunes
           </span>
         </span>
       </div>

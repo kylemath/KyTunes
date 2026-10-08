@@ -1,7 +1,18 @@
 import * as mm from 'music-metadata';
 import type { Song } from '../types';
 
-const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.flac', '.wav', '.aac', '.ogg', '.wma']);
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.m4a', '.mp4', '.flac', '.wav', '.aac', '.ogg', '.opus', '.wma']);
+
+// App data that macOS keeps in ~/Music, plus package bundles that are not a listening library.
+const APP_DIR_NAMES = new Set(['garageband', 'logic', 'audio music apps', 'mainstage']);
+const BUNDLE_SUFFIXES = ['.musiclibrary', '.app', '.band', '.logicx', '.bundle', '.photoslibrary', '.tvlibrary'];
+
+function shouldSkipDirectory(name: string, atRoot: boolean): boolean {
+  if (name.startsWith('.')) return true;
+  const lower = name.toLowerCase();
+  if (BUNDLE_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true;
+  return atRoot && APP_DIR_NAMES.has(lower);
+}
 
 function getExtension(name: string): string {
   const idx = name.lastIndexOf('.');
@@ -48,27 +59,35 @@ export async function collectFiles(
   const songs: Song[] = [];
 
   async function walk(handle: FileSystemDirectoryHandle, currentPath: string) {
-    for await (const entry of (handle as any).values()) {
-      if (entry.kind === 'file') {
-        if (AUDIO_EXTENSIONS.has(getExtension(entry.name))) {
-          const fullPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
-          const inferred = inferFromPath(fullPath, entry.name);
-          songs.push({
-            id: fullPath,
-            title: inferred.title,
-            artist: inferred.artist,
-            album: inferred.album,
-            duration: 0,
-            fileHandle: entry as FileSystemFileHandle,
-          });
-          if (onProgress && songs.length % 200 === 0) {
-            onProgress(songs.length);
+    try {
+      for await (const entry of (handle as any).values()) {
+        if (shouldSkipDirectory(entry.name, currentPath === '')) continue;
+        if (entry.kind === 'file') {
+          if (AUDIO_EXTENSIONS.has(getExtension(entry.name))) {
+            const fullPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+            const inferred = inferFromPath(fullPath, entry.name);
+            songs.push({
+              id: fullPath,
+              title: inferred.title,
+              artist: inferred.artist,
+              album: inferred.album,
+              duration: 0,
+              source: 'local',
+              fileHandle: entry as FileSystemFileHandle,
+            });
+            if (onProgress && songs.length % 200 === 0) {
+              onProgress(songs.length);
+            }
           }
+        } else if (entry.kind === 'directory') {
+          const childPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+          await walk(entry as FileSystemDirectoryHandle, childPath);
         }
-      } else if (entry.kind === 'directory') {
-        const childPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
-        await walk(entry as FileSystemDirectoryHandle, childPath);
       }
+    } catch (error) {
+      const name = (error as { name?: string }).name;
+      if (name === 'NotAllowedError' || name === 'NotFoundError' || name === 'SecurityError') return;
+      throw error;
     }
   }
 
@@ -106,6 +125,7 @@ export async function parseMetadataInBackground(
     await Promise.all(
       batch.map(async (song) => {
         try {
+          if (!song.fileHandle) return;
           const file = await song.fileHandle.getFile();
           const metadata = await mm.parseBlob(file, { duration: true, skipCovers: true });
 

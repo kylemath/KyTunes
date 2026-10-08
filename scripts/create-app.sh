@@ -1,12 +1,12 @@
 #!/bin/bash
-# Creates a macOS .app bundle for Local Player
+# Creates a macOS .app bundle for KyTunes
 # Usage: ./scripts/create-app.sh [--install]
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_NAME="Local Player"
+APP_NAME="KyTunes"
 APP_DIR="$PROJECT_DIR/build/$APP_NAME.app"
 
 echo "Building $APP_NAME.app..."
@@ -22,9 +22,9 @@ cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Local Player</string>
+    <string>KyTunes</string>
     <key>CFBundleDisplayName</key>
-    <string>Local Player</string>
+    <string>KyTunes</string>
     <key>CFBundleIdentifier</key>
     <string>com.localplayer.app</string>
     <key>CFBundleVersion</key>
@@ -77,7 +77,7 @@ if [ "$1" = "--install" ]; then
   xattr -cr "/Applications/$APP_NAME.app" 2>/dev/null || true
   echo "Installed: /Applications/$APP_NAME.app"
   echo ""
-  echo "You can now find 'Local Player' in Spotlight or Launchpad."
+  echo "You can now find 'KyTunes' in Spotlight or Launchpad."
 fi
 
 echo ""

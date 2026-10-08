@@ -6,11 +6,11 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PORT=5173
 URL="http://localhost:$PORT"
 LOG_FILE="$PROJECT_DIR/.localplayer.log"
-APP_NAME="Local Player"
+APP_NAME="KyTunes"
 
 exec > "$LOG_FILE" 2>&1
 
-echo "=== Local Player launch at $(date) ==="
+echo "=== KyTunes launch at $(date) ==="
 echo "PROJECT_DIR: $PROJECT_DIR"
 
 # ---------- Ensure a modern Node is on PATH ----------
@@ -60,7 +60,7 @@ echo "npm:  $(which npm 2>/dev/null) $(npm --version 2>/dev/null)"
 
 NODE_MAJOR=$(node -e 'process.stdout.write(process.versions.node.split(".")[0])' 2>/dev/null)
 if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 18 ] 2>/dev/null; then
-  osascript -e "display dialog \"Local Player requires Node.js >= 18 but found $(node --version 2>/dev/null || echo 'none').
+  osascript -e "display dialog \"KyTunes requires Node.js >= 18 but found $(node --version 2>/dev/null || echo 'none').
 
 Install a modern Node:
   brew install node
@@ -139,7 +139,7 @@ else
 1. Look for the install icon (⊕) on the right side of the address bar
 2. Click it and choose Install
 
-Then always launch via the Local Player.app (from create-app) — not the PWA directly — so the server starts first.\" with title \"$APP_NAME — Install as App\" buttons {\"OK\"} default button \"OK\"" &
+Then always launch via the KyTunes.app (from create-app) — not the PWA directly — so the server starts first.\" with title \"$APP_NAME — Install as App\" buttons {\"OK\"} default button \"OK\"" &
 fi
 
 wait "$SERVER_PID"

@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:pages": "tsc -b && vite build --mode pages",
     "lint": "eslint .",
     "preview": "vite preview",
+    "library": "node server/library-server.mjs",
     "launch": "./scripts/launch.sh",
     "create-app": "./scripts/create-app.sh",
     "install-app": "./scripts/create-app.sh --install"

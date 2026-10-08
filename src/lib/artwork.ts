@@ -82,7 +82,7 @@ async function searchViaMusicBrainz(album: string, artist: string): Promise<Albu
   for (const query of queries) {
     const params = new URLSearchParams({ query, fmt: 'json', limit: '5' });
     const searchRes = await fetch(`https://musicbrainz.org/ws/2/release?${params}`, {
-      headers: { Accept: 'application/json', 'User-Agent': 'KyleAmp/1.0 (local-player)' },
+      headers: { Accept: 'application/json', 'User-Agent': 'KyTunes/1.0 (kytunes)' },
       signal: AbortSignal.timeout(8000),
     });
     if (!searchRes.ok) continue;

@@ -32,5 +32,10 @@ dev-dist/
 .localplayer.log
 favicon.ico
 
+# Library server (password hash and local catalog)
+library.config.json
+library.cache.json
+library.cache.json.tmp
+
 # Editor workspace files (machine-local, no value in repo)
 *.code-workspace

@@ -17,6 +17,8 @@ interface LibraryProps {
   selectedSongId?: string;
   contextSongId?: string;
   onRescan: () => void;
+  compact?: boolean;
+  keptIds?: ReadonlySet<string>;
 }
 
 const ROW_HEIGHT = 28;
@@ -35,6 +37,8 @@ interface SongRowExtraProps {
   onPlay: (song: Song) => void;
   onSelect?: (song: Song) => void;
   onAddToQueue?: (song: Song) => void;
+  compact?: boolean;
+  keptIds?: ReadonlySet<string>;
 }
 
 interface HistoryRowExtraProps {
@@ -54,26 +58,30 @@ function rowClassName(isCurrent: boolean, isSelected: boolean, isEven: boolean) 
 }
 
 function SongRow(props: { ariaAttributes: { "aria-posinset": number; "aria-setsize": number; role: "listitem" }; index: number; style: React.CSSProperties } & SongRowExtraProps) {
-  const { index, style, songs, currentSongId, selectedSongId, onPlay, onSelect, onAddToQueue } = props;
+  const { index, style, songs, currentSongId, selectedSongId, onPlay, onSelect, onAddToQueue, compact, keptIds } = props;
   const song = songs[index];
   if (!song) return null;
+  const kept = keptIds?.has(song.id);
 
   return (
     <div
       style={style}
       className={`flex items-center px-4 text-sm cursor-default select-none group ${rowClassName(song.id === currentSongId, song.id === selectedSongId, index % 2 === 0)}`}
-      onClick={() => onSelect?.(song)}
+      onClick={() => { if (compact) onPlay(song); else onSelect?.(song); }}
       onDoubleClick={() => onPlay(song)}
     >
       <div className="w-8 flex-shrink-0 text-gray-400 text-xs">{index + 1}</div>
-      <div className="flex-1 min-w-[150px] pr-4 truncate font-medium">{song.title}</div>
-      <div className="flex-1 min-w-[120px] pr-4 truncate">{song.artist}</div>
+      <div className={`flex-1 pr-4 truncate font-medium ${compact ? 'min-w-0' : 'min-w-[150px]'}`}>
+        {kept && <span className="mr-1 text-blue-500" title="Saved on this device">●</span>}
+        {song.title}
+      </div>
+      <div className={`flex-1 pr-4 truncate ${compact ? 'min-w-0' : 'min-w-[120px]'}`}>{song.artist}</div>
       <div className="w-16 flex-shrink-0 text-right pr-4 tabular-nums">{formatTime(song.duration)}</div>
-      <div className="w-11 flex-shrink-0 text-right pr-3 tabular-nums text-gray-600 dark:text-gray-400">
+      <div className={`w-11 flex-shrink-0 text-right pr-3 tabular-nums text-gray-600 dark:text-gray-400 ${compact ? 'hidden' : ''}`}>
         {song.trackNumber != null && song.trackNumber > 0 ? song.trackNumber : ''}
       </div>
-      <div className="flex-1 min-w-[120px] pr-4 truncate">{song.album}</div>
-      <div className="w-24 flex-shrink-0 truncate">{song.genre || ''}</div>
+      <div className={`flex-1 min-w-[120px] pr-4 truncate ${compact ? 'hidden' : ''}`}>{song.album}</div>
+      <div className={`w-24 flex-shrink-0 truncate ${compact ? 'hidden' : ''}`}>{song.genre || ''}</div>
       <div className="w-16 flex-shrink-0 flex justify-end">
         {onAddToQueue && (
           <button
@@ -150,9 +158,10 @@ export function Library({
   sortColumn, sortDirection, onSort,
   onPlay, onSelect, onAddToQueue,
   currentSongId, selectedSongId, contextSongId, onRescan,
+  compact = false, keptIds,
 }: LibraryProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
-  const rowProps: SongRowExtraProps = { songs, currentSongId, selectedSongId, onPlay, onSelect, onAddToQueue };
+  const rowProps: SongRowExtraProps = { songs, currentSongId, selectedSongId, onPlay, onSelect, onAddToQueue, compact, keptIds };
   const historyRowProps: HistoryRowExtraProps = { items: historyItems, currentSongId, selectedSongId, onPlay, onSelect };
   const isHistoryMode = mode === 'History';
   const isQueueMode = mode === 'Queue';
@@ -222,7 +231,7 @@ export function Library({
 
   return (
     <div className="flex-1 flex flex-col overflow-x-auto bg-gray-50 dark:bg-[#1a1a1a]">
-      <div className={`${isHistoryMode ? 'min-w-[840px]' : 'min-w-[760px]'} flex-1 flex flex-col min-h-0 bg-white dark:bg-[#121212]`}>
+      <div className={`${compact ? 'min-w-0' : isHistoryMode ? 'min-w-[840px]' : 'min-w-[760px]'} flex-1 flex flex-col min-h-0 bg-white dark:bg-[#121212]`}>
         {/* Table Header */}
         <div className="flex items-center px-4 py-2 border-b border-gray-200 dark:border-gray-800 text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider bg-gray-50 dark:bg-[#1a1a1a] shrink-0">
           <div className="w-8 flex-shrink-0"></div>
@@ -249,22 +258,22 @@ export function Library({
             </>
           ) : (
             <>
-              <div className="flex-1 min-w-[150px] pr-4">
+              <div className={`flex-1 pr-4 ${compact ? 'min-w-0' : 'min-w-[150px]'}`}>
                 <SortHeader label="Name" column="title" currentColumn={sortColumn} direction={sortDirection} onSort={onSort} />
               </div>
-              <div className="flex-1 min-w-[120px] pr-4">
+              <div className={`flex-1 pr-4 ${compact ? 'min-w-0' : 'min-w-[120px]'}`}>
                 <SortHeader label="Artist" column="artist" currentColumn={sortColumn} direction={sortDirection} onSort={onSort} />
               </div>
               <div className="w-16 flex-shrink-0 text-right pr-4">
                 <SortHeader label="Time" column="duration" currentColumn={sortColumn} direction={sortDirection} onSort={onSort} />
               </div>
-              <div className="w-11 flex-shrink-0 text-right pr-3">
+              <div className={`w-11 flex-shrink-0 text-right pr-3 ${compact ? 'hidden' : ''}`}>
                 <SortHeader label="#" column="trackNumber" currentColumn={sortColumn} direction={sortDirection} onSort={onSort} className="ml-auto" />
               </div>
-              <div className="flex-1 min-w-[120px] pr-4">
+              <div className={`flex-1 min-w-[120px] pr-4 ${compact ? 'hidden' : ''}`}>
                 <SortHeader label="Album" column="album" currentColumn={sortColumn} direction={sortDirection} onSort={onSort} />
               </div>
-              <div className="w-24 flex-shrink-0">
+              <div className={`w-24 flex-shrink-0 ${compact ? 'hidden' : ''}`}>
                 <SortHeader label="Genre" column="genre" currentColumn={sortColumn} direction={sortDirection} onSort={onSort} />
               </div>
             </>
