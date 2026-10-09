@@ -56,11 +56,28 @@ LAUNCHER
 chmod +x "$APP_DIR/Contents/MacOS/LocalPlayer"
 
 # --- Icon ---
+ICON_SRC="$PROJECT_DIR/public/icon-512.png"
+ICONSET="$PROJECT_DIR/build/AppIcon.iconset"
+if [ -f "$ICON_SRC" ]; then
+  mkdir -p "$ICONSET"
+  sips -z 16 16 "$ICON_SRC" --out "$ICONSET/icon_16x16.png" >/dev/null
+  sips -z 32 32 "$ICON_SRC" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+  sips -z 32 32 "$ICON_SRC" --out "$ICONSET/icon_32x32.png" >/dev/null
+  sips -z 64 64 "$ICON_SRC" --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+  sips -z 128 128 "$ICON_SRC" --out "$ICONSET/icon_128x128.png" >/dev/null
+  sips -z 256 256 "$ICON_SRC" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+  sips -z 256 256 "$ICON_SRC" --out "$ICONSET/icon_256x256.png" >/dev/null
+  sips -z 512 512 "$ICON_SRC" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+  sips -z 512 512 "$ICON_SRC" --out "$ICONSET/icon_512x512.png" >/dev/null
+  cp "$ICON_SRC" "$ICONSET/icon_512x512@2x.png"
+  iconutil -c icns "$ICONSET" -o "$PROJECT_DIR/build/AppIcon.icns"
+  rm -rf "$ICONSET"
+fi
 if [ -f "$PROJECT_DIR/build/AppIcon.icns" ]; then
   cp "$PROJECT_DIR/build/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
   echo "  Icon: ✓"
 else
-  echo "  Icon: ✗ (run icon generation first)"
+  echo "  Icon: ✗ (public/icon-512.png is missing)"
 fi
 
 # Clear quarantine so Gatekeeper doesn't block on first launch
@@ -75,9 +92,10 @@ if [ "$1" = "--install" ]; then
   rm -rf "/Applications/$APP_NAME.app"
   cp -R "$APP_DIR" "/Applications/$APP_NAME.app"
   xattr -cr "/Applications/$APP_NAME.app" 2>/dev/null || true
-  echo "Installed: /Applications/$APP_NAME.app"
-  echo ""
-  echo "You can now find 'KyTunes' in Spotlight or Launchpad."
+echo "Installed: /Applications/$APP_NAME.app"
+echo ""
+echo "Use the Applications icon to start KyTunes. It starts the player, then opens the window."
+echo "The other Dock icon only opens the window. It stays blank until the Applications app is running."
 fi
 
 echo ""
