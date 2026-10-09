@@ -4,6 +4,7 @@ import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 import fs from 'node:fs'
 import { execFile } from 'node:child_process'
+import { hostStatus, startHost, stopHost } from './scripts/dev-host.ts'
 
 function libraryProxyTarget(): string {
   try {
@@ -67,18 +68,74 @@ function devSharePlugin(): Plugin {
     apply: 'serve',
     configureServer(server) {
       server.middlewares.use(async (req, res, next) => {
-        if (req.url?.split('?')[0] !== '/dev-share') {
+        const pathname = req.url?.split('?')[0]
+        if (pathname !== '/dev-share' && pathname !== '/dev-host' && pathname !== '/dev-host/start' && pathname !== '/dev-host/stop') {
           next()
           return
         }
-        const info = await devShareInfo()
-        res.statusCode = info ? 200 : 404
+        const ip = req.socket.remoteAddress || ''
+        const local = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1'
+        if (!local) {
+          res.statusCode = 404
+          res.end()
+          return
+        }
         res.setHeader('Content-Type', 'application/json; charset=utf-8')
         res.setHeader('Cache-Control', 'no-store')
-        res.end(JSON.stringify(info ?? { error: 'Tailscale is not available.' }))
+        try {
+          if (pathname === '/dev-share') {
+            const info = await devShareInfo()
+            res.statusCode = info ? 200 : 404
+            res.end(JSON.stringify(info ?? { error: 'Tailscale is not available.' }))
+            return
+          }
+          if (pathname === '/dev-host/start' && req.method === 'POST') {
+            const raw = await readRequestBody(req)
+            const body = raw ? JSON.parse(raw) as { musicDir?: string; password?: string } : {}
+            const status = await startHost({ musicDir: body.musicDir, password: body.password })
+            res.statusCode = 200
+            res.end(JSON.stringify(status))
+            return
+          }
+          if (pathname === '/dev-host/stop' && req.method === 'POST') {
+            const status = await stopHost()
+            res.statusCode = 200
+            res.end(JSON.stringify(status))
+            return
+          }
+          const status = await hostStatus()
+          res.statusCode = 200
+          res.end(JSON.stringify(status))
+        } catch (error) {
+          res.statusCode = 400
+          res.end(JSON.stringify({ error: error instanceof Error ? error.message : 'Could not change hosting.' }))
+        }
       })
+      return () => {
+        server.httpServer?.on('close', () => {
+          void stopHost()
+        })
+      }
     },
   }
+}
+
+function readRequestBody(req: import('node:http').IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > 8192) {
+        reject(new Error('Request is too large.'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString()))
+    req.on('error', reject)
+  })
 }
 
 export default defineConfig(({ mode }) => {

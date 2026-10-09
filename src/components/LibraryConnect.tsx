@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { FolderOpen, Radio } from 'lucide-react';
 
 interface LibraryConnectProps {
@@ -27,12 +27,47 @@ export function LibraryConnect({
   const [password, setPassword] = useState('');
   const [serverUrl, setServerUrl] = useState(savedServerUrl);
   const [otherServer, setOtherServer] = useState(!sameOriginReady);
+  const [role, setRole] = useState<'slave' | 'server'>('slave');
+  const [musicDir, setMusicDir] = useState('~/Music');
+  const [hostError, setHostError] = useState<string | null>(null);
+  const [hosting, setHosting] = useState(false);
   const showUrlField = !sameOriginReady || otherServer;
+  const canHost = import.meta.env.DEV;
+
+  useEffect(() => {
+    if (!canHost) return;
+    fetch('/dev-host')
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = await res.json() as { musicDir?: string };
+        if (data.musicDir) setMusicDir(data.musicDir);
+      })
+      .catch(() => {});
+  }, [canHost]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (connecting) return;
     onConnect(showUrlField ? serverUrl : '', password);
+  };
+
+  const becomeServer = async (event: FormEvent) => {
+    event.preventDefault();
+    setHostError(null);
+    setHosting(true);
+    try {
+      const res = await fetch('/dev-host/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ musicDir, password }),
+      });
+      const data = await res.json() as { error?: string };
+      if (!res.ok) throw new Error(data.error || 'Could not start the server.');
+      onConnect('', password);
+    } catch (startError) {
+      setHostError(startError instanceof Error ? startError.message : 'Could not start the server.');
+      setHosting(false);
+    }
   };
 
   return (
@@ -43,13 +78,66 @@ export function LibraryConnect({
         </div>
         <h1 className="text-2xl font-bold mb-2 text-center">Welcome to KyTunes</h1>
         <p className="text-gray-600 dark:text-gray-400 mb-6 text-center text-sm">
-          Play a folder on this computer, sign in to a library server and stream, or try the included demo tracks. Songs from a server stay there until you choose to keep a copy here.
+          This computer opens as a player. Join a library, or choose Server if this is the computer that should host the music.
         </p>
 
-        {error && (
-          <p className="mb-4 text-sm text-red-600 dark:text-red-400 text-center">{error}</p>
+        {canHost && (
+          <div className="mb-5 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setRole('slave')}
+              className={`px-3 py-2 text-sm rounded-lg border ${role === 'slave' ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'}`}
+            >
+              Slave
+            </button>
+            <button
+              type="button"
+              onClick={() => setRole('server')}
+              className={`px-3 py-2 text-sm rounded-lg border ${role === 'server' ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400' : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'}`}
+            >
+              Server
+            </button>
+          </div>
         )}
 
+        {(error || hostError) && (
+          <p className="mb-4 text-sm text-red-600 dark:text-red-400 text-center">{hostError || error}</p>
+        )}
+
+        {canHost && role === 'server' ? (
+          <form onSubmit={(event) => { void becomeServer(event); }} className="flex flex-col gap-3">
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-gray-600 dark:text-gray-300">Music folder on this computer</span>
+              <input
+                type="text"
+                autoCapitalize="none"
+                autoCorrect="off"
+                value={musicDir}
+                onChange={(event) => setMusicDir(event.target.value)}
+                className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                required
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="text-gray-600 dark:text-gray-300">Password</span>
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
+                required
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={hosting || connecting}
+              className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white px-6 py-3 rounded-lg font-medium transition-colors"
+            >
+              {hosting || connecting ? 'Starting server…' : 'Start server'}
+            </button>
+          </form>
+        ) : (
         <form onSubmit={submit} className="flex flex-col gap-3">
           {sameOriginReady && !otherServer && (
             <p className="text-sm text-gray-500 dark:text-gray-400 text-center">
@@ -64,7 +152,7 @@ export function LibraryConnect({
                 inputMode="url"
                 autoCapitalize="none"
                 autoCorrect="off"
-                placeholder="https://your-library.example:8787"
+                placeholder="https://your-library.example"
                 value={serverUrl}
                 onChange={(event) => setServerUrl(event.target.value)}
                 className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"
@@ -100,6 +188,7 @@ export function LibraryConnect({
             </button>
           )}
         </form>
+        )}
 
         <div className="flex items-center gap-3 my-5 text-xs uppercase tracking-wide text-gray-400">
           <div className="flex-1 h-px bg-gray-200 dark:bg-gray-700" />
@@ -133,8 +222,8 @@ export function LibraryConnect({
         </button>
 
         <p className="mt-6 text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
-          On the computer with the music, run <span className="font-mono">npm run library -- --dir ~/Music --password '…'</span>, then enter the address it prints.
-          A public HTTPS page cannot reach a private http address on your home network. Away from home, use an HTTPS address such as Tailscale Serve.
+          Slave joins a library that is already hosted. Server starts hosting on this computer and publishes it with Tailscale when that app is signed in.
+          A saved library on this Mac still needs the password you chose the first time.
         </p>
       </div>
     </div>

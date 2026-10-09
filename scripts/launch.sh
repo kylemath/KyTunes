@@ -71,96 +71,21 @@ fi
 
 SERVER_PID=""
 DEV_STARTED=0
-LIBRARY_PID=""
-LIBRARY_STARTED=0
-SHARE_STARTED=0
-TS_BIN=""
 
 # ---------- Clean up on exit ----------
-# Only processes this launch started are stopped. A dev server or library
-# server that was already running is left alone.
+# Only the dev server this launch started is stopped.
 cleanup() {
   if [ "$DEV_STARTED" = "1" ] && [ -n "$SERVER_PID" ]; then
     kill "$SERVER_PID" 2>/dev/null
-  fi
-  if [ "$LIBRARY_STARTED" = "1" ] && [ -n "$LIBRARY_PID" ]; then
-    kill "$LIBRARY_PID" 2>/dev/null
-  fi
-  if [ "$SHARE_STARTED" = "1" ] && [ -n "$TS_BIN" ]; then
-    "$TS_BIN" serve reset >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT INT TERM
 
 cd "$PROJECT_DIR" || exit 1
 
-# ---------- Library server ----------
-# Other devices stream from this process. It uses library.config.json, so the
-# password is not passed on the command line.
-LIBRARY_PORT=8787
-if [ -f "$PROJECT_DIR/library.config.json" ]; then
-  cfg_port=$(node -e 'try{const c=require("./library.config.json"); if(typeof c.port==="number") process.stdout.write(String(c.port))}catch(e){}')
-  if [ -n "$cfg_port" ]; then
-    LIBRARY_PORT="$cfg_port"
-  fi
-  if curl -sf "http://127.0.0.1:$LIBRARY_PORT/api/health" >/dev/null 2>&1; then
-    echo "Library server already running on port $LIBRARY_PORT"
-  else
-    echo "Starting library server on port $LIBRARY_PORT"
-    node server/library-server.mjs &
-    LIBRARY_PID=$!
-    LIBRARY_STARTED=1
-    for i in $(seq 1 40); do
-      if curl -sf "http://127.0.0.1:$LIBRARY_PORT/api/health" >/dev/null 2>&1; then
-        echo "Library server is up after ~$((i / 4))s"
-        break
-      fi
-      if ! kill -0 "$LIBRARY_PID" 2>/dev/null; then
-        echo "Library server exited"
-        break
-      fi
-      sleep 0.25
-    done
-    if ! curl -sf "http://127.0.0.1:$LIBRARY_PORT/api/health" >/dev/null 2>&1; then
-      echo "Library server did not become ready"
-      osascript -e "display dialog \"KyTunes opened, but the library server did not start. Other devices will not be able to stream. Check .localplayer.log in the project folder.\" with title \"$APP_NAME\" buttons {\"OK\"} default button \"OK\" with icon caution" &
-    fi
-  fi
-  if curl -sf "http://127.0.0.1:$LIBRARY_PORT/api/health" >/dev/null 2>&1; then
-    TS_BIN=""
-    for candidate in \
-      "/Applications/Tailscale.app/Contents/MacOS/Tailscale" \
-      "/usr/local/bin/tailscale" \
-      "/opt/homebrew/bin/tailscale"
-    do
-      if [ -x "$candidate" ]; then
-        TS_BIN="$candidate"
-        break
-      fi
-    done
-    if [ -z "$TS_BIN" ] && command -v tailscale >/dev/null 2>&1; then
-      TS_BIN="$(command -v tailscale)"
-    fi
-    if [ -z "$TS_BIN" ]; then
-      echo "Tailscale is not installed — phone link not published"
-    else
-      serve_status=$("$TS_BIN" serve status --json 2>/dev/null || echo '{}')
-      if printf '%s' "$serve_status" | grep -q "127.0.0.1:${LIBRARY_PORT}"; then
-        echo "Tailscale Serve already publishing port $LIBRARY_PORT"
-      elif "$TS_BIN" serve --bg "$LIBRARY_PORT" >/dev/null 2>&1; then
-        SHARE_STARTED=1
-        echo "Tailscale Serve publishing port $LIBRARY_PORT"
-      else
-        echo "Tailscale Serve is already running in another window — leaving it"
-      fi
-    fi
-  fi
-else
-  echo "No library.config.json — skipping the library server"
-fi
-
 # ---------- Vite dev server ----------
-# Keep a player that is already running. The library server is additional.
+# Opening the app starts the player only. The library server and Tailscale
+# Serve stay separate, so this machine does not host music unless you start them.
 if curl -sf "$URL" >/dev/null 2>&1; then
   echo "Dev server already running on port $PORT — leaving it up"
 else
@@ -231,6 +156,4 @@ fi
 # and is not stopped.
 if [ "$DEV_STARTED" = "1" ]; then
   wait "$SERVER_PID"
-elif [ "$LIBRARY_STARTED" = "1" ]; then
-  wait "$LIBRARY_PID"
 fi

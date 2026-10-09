@@ -13,7 +13,7 @@ npm run dev
 
 Open the address Vite prints and choose **Select music folder**. This uses the file picker in desktop Chrome. On macOS, pointing it at `~/Music` skips GarageBand, Logic, Audio Music Apps, and MainStage. Those are app folders, and GarageBand is often blocked by the system. Other unreadable folders are skipped instead of stopping the scan.
 
-`npm run launch`, and the KyTunes Mac app from `npm run create-app`, start the player, the library server, and Tailscale Serve. A dev server already running on port 5173 is left up. Quit the app and Tailscale Serve stops with the processes that launch started. `npm run share` does the same Tailscale step in a terminal if you want the QR code printed there.
+`npm run launch`, and the KyTunes Mac app from `npm run create-app`, start the player only. It opens as a slave: join a library, or choose Server on the welcome screen to host on this computer. `npm run library` and `npm run share` still work from a terminal.
 
 ## Library server
 
