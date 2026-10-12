@@ -76,6 +76,7 @@ export function mergeCatalog(input: {
     ...record.song,
     id: record.id,
     libraryId: LOCAL_LIBRARY_ID,
+    originLibraryId: record.originLibraryId,
     remoteId: record.remoteId,
     source: 'local' as const,
     streamUrl: undefined,
@@ -88,7 +89,9 @@ export function mergeCatalog(input: {
   }));
   const remote: Song[] = [];
   for (const library of input.libraries) {
-    if (library.reachable !== true) continue;
+    // Keep listing an unreachable library's last known songs, so the list does not
+    // vanish when the connection drops. They are marked offline until it comes back.
+    const offline = library.reachable === false;
     for (const song of library.songs) {
       const remoteId = song.remoteId || song.id;
       if (keptKeys.has(`${library.id}:${remoteId}`)) continue;
@@ -99,6 +102,7 @@ export function mergeCatalog(input: {
         remoteId,
         libraryId: library.id,
         source: 'remote',
+        offline,
         fileHandle: undefined,
         streamUrl: streamUrlFor(library.session, remoteId),
       });

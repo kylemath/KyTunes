@@ -63,7 +63,6 @@ function App() {
   const [libraryMode, setLibraryMode] = useState<'local' | 'remote' | 'demo' | 'choose' | null>(null);
   const [booting, setBooting] = useState(true);
   const [libraries, setLibraries] = useState<ConnectedLibrary[]>([]);
-  const [libraryFilter, setLibraryFilter] = useState(LOCAL_LIBRARY_ID);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [keptIds, setKeptIds] = useState<Set<string>>(() => new Set());
@@ -75,6 +74,10 @@ function App() {
   const [selectedSong, setSelectedSong] = useState<Song | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [userQueue, setUserQueueState] = useState<string[]>([]);
+  /** The list a song was started from. Next and previous walk this list, so browsing elsewhere does not break them. */
+  const [playContext, setPlayContext] = useState<string[]>([]);
+  /** Set when the song now playing has a finished local copy, so the player can fade over to it. */
+  const [localReady, setLocalReady] = useState<{ songId: string; at: number } | null>(null);
 
   const [filterType, setFilterType] = useState<FilterType>('All');
   const [filterValue, setFilterValue] = useState<string>('');
@@ -197,6 +200,7 @@ function App() {
     publishCatalog();
   }, [publishCatalog]);
 
+  const probeFailuresRef = useRef(new Map<string, number>());
   const markLibraryUnreachable = useCallback((id: string) => {
     const current = partsRef.current.libraries.find((item) => item.id === id);
     if (!current || current.reachable === false) return;
@@ -331,28 +335,49 @@ function App() {
   useEffect(() => {
     if (libraries.length === 0) return;
     let cancelled = false;
+    let running = false;
     const check = async () => {
-      for (const library of [...partsRef.current.libraries]) {
-        if (cancelled) return;
-        const up = await probeLibrary(library.session);
-        if (cancelled) return;
-        const current = partsRef.current.libraries.find((item) => item.id === library.id);
-        if (!current) continue;
-        if (up && current.reachable !== true) {
-          try {
-            await refreshLibrary(current);
-          } catch {
-            // The refresh already hid this library's songs.
+      if (running) return;
+      running = true;
+      try {
+        for (const library of [...partsRef.current.libraries]) {
+          if (cancelled) return;
+          const up = await probeLibrary(library.session);
+          if (cancelled) return;
+          const current = partsRef.current.libraries.find((item) => item.id === library.id);
+          if (!current) continue;
+          if (up) {
+            probeFailuresRef.current.set(current.id, 0);
+            if (current.reachable !== true) {
+              try {
+                await refreshLibrary(current);
+              } catch {
+                // Still listed from the last connection.
+              }
+            }
+          } else {
+            // One missed probe is common on a phone moving between networks.
+            // Mark the library offline only after two in a row.
+            const failures = (probeFailuresRef.current.get(current.id) ?? 0) + 1;
+            probeFailuresRef.current.set(current.id, failures);
+            if (failures >= 2) markLibraryUnreachable(current.id);
           }
-        } else if (!up) {
-          markLibraryUnreachable(current.id);
         }
+      } finally {
+        running = false;
       }
     };
+    const onWake = () => {
+      if (document.visibilityState === 'visible') void check();
+    };
     const timer = window.setInterval(() => { void check(); }, 15000);
+    window.addEventListener('online', onWake);
+    document.addEventListener('visibilitychange', onWake);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.removeEventListener('online', onWake);
+      document.removeEventListener('visibilitychange', onWake);
     };
   }, [libraries.length, refreshLibrary, markLibraryUnreachable]);
 
@@ -438,7 +463,6 @@ function App() {
         },
       ];
       await storeLibraries(next);
-      setLibraryFilter('all');
       setLoading(false);
       setLoadingStatus('');
     } catch (error) {
@@ -454,7 +478,6 @@ function App() {
 
   const removeLibrary = async (id: string) => {
     await storeLibraries(partsRef.current.libraries.filter((library) => library.id !== id));
-    setLibraryFilter((current) => current === id ? LOCAL_LIBRARY_ID : current);
   };
 
   const hostHere = async (musicDir: string, password: string) => {
@@ -523,7 +546,10 @@ function App() {
       partsRef.current.kept = [...partsRef.current.kept.filter((item) => item.id !== song.id), record];
       await saveKeptSongRecords(partsRef.current.kept);
       publishCatalog();
-      setCurrentSong((prev) => prev && prev.id === song.id ? { ...prev, libraryId: LOCAL_LIBRARY_ID, source: 'local', streamUrl: undefined, lineage: lineage ?? prev.lineage } : prev);
+      // Leave the stream address alone so the player does not restart the song.
+      // It fades over to the local copy instead.
+      setCurrentSong((prev) => prev && prev.id === song.id ? { ...prev, libraryId: LOCAL_LIBRARY_ID, originLibraryId: song.libraryId, lineage: lineage ?? prev.lineage } : prev);
+      setLocalReady({ songId: song.id, at: Date.now() });
       setLoadingStatus(library.baseUrl && !deposited ? 'Saved on this device. Choose a music folder to keep the file there.' : '');
     } catch (error) {
       const name = (error as { name?: string }).name;
@@ -637,9 +663,6 @@ function App() {
     if (filterType === 'History') return sortedHistoryItems.map(item => item.song);
     if (filterType === 'Queue') return queueSongs;
     let list = songs;
-    if (libraryFilter !== 'all' && filterType !== 'Playlist') {
-      list = list.filter((song) => (song.libraryId ?? LOCAL_LIBRARY_ID) === libraryFilter);
-    }
     if (filterType === 'Artists' && filterValue) {
       // Match by canonical name so "Kid Cudi feat. X" rows still show when
       // the user has selected "Kid Cudi" from the grouped sidebar list.
@@ -655,7 +678,7 @@ function App() {
       list = list.filter(s => ids.has(s.id));
     }
     return list;
-  }, [songs, filterType, filterValue, playlists, sortedHistoryItems, libraryFilter]);
+  }, [songs, filterType, filterValue, playlists, sortedHistoryItems, queueSongs, artistGroupOverrides]);
 
   const visibleSongs = useMemo(() => {
     let list = songListForView;
@@ -714,48 +737,71 @@ function App() {
     });
   }, [songListForView, searchQueryDebounced, sortColumn, sortDirection, playlists, filterType]);
 
-  const playbackContextKey = useMemo(() => (
-    `${filterType}::${filterValue}::${searchQueryDebounced}::${sortColumn}::${sortDirection}::${visibleSongs.map(song => song.id).join('|')}`
-  ), [filterType, filterValue, searchQueryDebounced, sortColumn, sortDirection, visibleSongs]);
+  /** Songs in the list playback started from, minus any no longer in the catalog. */
+  const contextSongs = useMemo(
+    () => playContext.map((id) => songMap.get(id)).filter((song): song is Song => Boolean(song)),
+    [playContext, songMap],
+  );
+  /** What next and previous can move to: songs that can play now, plus the current one. */
+  const playableContext = useMemo(
+    () => contextSongs.filter((song) => !song.offline || song.id === currentSong?.id),
+    [contextSongs, currentSong?.id],
+  );
+  const playbackContextKey = useMemo(
+    () => playableContext.map((song) => song.id).join('|'),
+    [playableContext],
+  );
 
-  const syncShuffleCycle = useCallback((contextSongs: Song[], contextKey: string, options?: { anchorSongId?: string; avoidFirstSongId?: string }) => {
+  const syncShuffleCycle = useCallback((list: Song[], contextKey: string, options?: { anchorSongId?: string; avoidFirstSongId?: string }) => {
     shuffleCycleRef.current = {
       contextKey,
-      order: buildShuffledSongIds(contextSongs, options?.anchorSongId, options?.avoidFirstSongId),
+      order: buildShuffledSongIds(list, options?.anchorSongId, options?.avoidFirstSongId),
     };
   }, []);
 
   const ensureShuffleCycle = useCallback((anchorSongId?: string) => {
     if (!shuffleOn) return [];
     const current = shuffleCycleRef.current;
-    const visibleSongIds = new Set(visibleSongs.map(song => song.id));
-    const isValid =
-      current.contextKey === playbackContextKey &&
-      current.order.length === visibleSongs.length &&
-      current.order.every(id => visibleSongIds.has(id));
-    if (!isValid) {
-      syncShuffleCycle(visibleSongs, playbackContextKey, { anchorSongId });
+    if (current.contextKey !== playbackContextKey) {
+      // The list changed (a library went offline or came back). Keep the order
+      // already played and fit the rest around it.
+      const ids = new Set(playableContext.map((song) => song.id));
+      const kept = current.order.filter((id) => ids.has(id));
+      const keptSet = new Set(kept);
+      const added = shuffleArray(playableContext.filter((song) => !keptSet.has(song.id)).map((song) => song.id));
+      const order = kept.length > 0 ? [...kept, ...added] : buildShuffledSongIds(playableContext, anchorSongId);
+      shuffleCycleRef.current = { contextKey: playbackContextKey, order };
     }
     return shuffleCycleRef.current.order;
-  }, [shuffleOn, visibleSongs, playbackContextKey, syncShuffleCycle]);
+  }, [shuffleOn, playableContext, playbackContextKey]);
 
   useEffect(() => {
-    if (!shuffleOn) {
-      shuffleCycleRef.current = { contextKey: '', order: [] };
-      return;
-    }
-    ensureShuffleCycle(currentSong?.id);
-  }, [shuffleOn, visibleSongs, playbackContextKey, currentSong?.id, ensureShuffleCycle]);
+    if (!shuffleOn) shuffleCycleRef.current = { contextKey: '', order: [] };
+  }, [shuffleOn]);
 
   const playSong = useCallback((song: Song, options?: { source?: 'manual' | 'advance' }) => {
-    if (shuffleOn && options?.source !== 'advance') {
-      syncShuffleCycle(visibleSongs, playbackContextKey, { anchorSongId: song.id });
+    if (options?.source !== 'advance') {
+      // Starting a song by hand makes the list on screen the play context.
+      const ids = visibleSongs.map((item) => item.id);
+      const context = ids.includes(song.id) ? ids : [song.id, ...ids];
+      setPlayContext(context);
+      if (shuffleOn) {
+        const list = context.map((id) => (id === song.id ? song : songMap.get(id))).filter((item): item is Song => Boolean(item) && (!item!.offline || item!.id === song.id));
+        syncShuffleCycle(list, list.map((item) => item.id).join('|'), { anchorSongId: song.id });
+      }
     }
     setCurrentSong(song);
     setSelectedSong(song);
     setIsPlaying(true);
     void saveRemoteCopy(song);
-  }, [shuffleOn, visibleSongs, playbackContextKey, syncShuffleCycle, saveRemoteCopy]);
+  }, [shuffleOn, visibleSongs, songMap, syncShuffleCycle, saveRemoteCopy]);
+
+  useEffect(() => {
+    // Turning shuffle on mid-song starts a fresh order from the current song.
+    if (shuffleOn && currentSong) syncShuffleCycle(playableContext, playbackContextKey, { anchorSongId: currentSong.id });
+    // Only when the toggle changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shuffleOn]);
 
   const playSongById = useCallback((songId: string, options?: { source?: 'manual' | 'advance' }) => {
     const song = songMap.get(songId);
@@ -816,35 +862,38 @@ function App() {
     if (shuffleOn) {
       const order = ensureShuffleCycle(currentSong.id);
       const currentIndex = order.indexOf(currentSong.id);
-      if (currentIndex < 0) return;
       const nextSongId = order[currentIndex + 1];
       if (nextSongId) {
         playSongById(nextSongId, { source: 'advance' });
         return;
       }
-      if (repeatMode === 'context' && visibleSongs.length > 0) {
-        syncShuffleCycle(visibleSongs, playbackContextKey, { avoidFirstSongId: currentSong.id });
+      if (repeatMode === 'context' && playableContext.length > 0) {
+        syncShuffleCycle(playableContext, playbackContextKey, { avoidFirstSongId: currentSong.id });
         const restartSongId = shuffleCycleRef.current.order[0];
         if (restartSongId) playSongById(restartSongId, { source: 'advance' });
       }
       return;
     }
-    if (currentVisibleIndex < 0) return;
-    if (currentVisibleIndex < visibleSongs.length - 1) {
-      playSong(visibleSongs[currentVisibleIndex + 1], { source: 'advance' });
+    const index = playableContext.findIndex((song) => song.id === currentSong.id);
+    if (index >= 0 && index < playableContext.length - 1) {
+      playSong(playableContext[index + 1], { source: 'advance' });
       return;
     }
-    if (repeatMode === 'context' && visibleSongs.length > 0) {
-      playSong(visibleSongs[0], { source: 'advance' });
+    if (index < 0 && playableContext.length > 0) {
+      // The current song is no longer in its list. Start the list again.
+      playSong(playableContext[0], { source: 'advance' });
+      return;
     }
-  }, [currentSong, shuffleOn, ensureShuffleCycle, playSongById, repeatMode, visibleSongs, playbackContextKey, currentVisibleIndex, playSong, syncShuffleCycle]);
+    if (repeatMode === 'context' && playableContext.length > 0) {
+      playSong(playableContext[0], { source: 'advance' });
+    }
+  }, [currentSong, shuffleOn, ensureShuffleCycle, playSongById, repeatMode, playableContext, playbackContextKey, playSong, syncShuffleCycle]);
 
   const prevSong = useCallback(() => {
     if (!currentSong) return;
     if (shuffleOn) {
       const order = ensureShuffleCycle(currentSong.id);
       const currentIndex = order.indexOf(currentSong.id);
-      if (currentIndex < 0) return;
       if (currentIndex > 0) {
         playSongById(order[currentIndex - 1], { source: 'advance' });
         return;
@@ -854,15 +903,15 @@ function App() {
       }
       return;
     }
-    if (currentVisibleIndex < 0) return;
-    if (currentVisibleIndex > 0) {
-      playSong(visibleSongs[currentVisibleIndex - 1], { source: 'advance' });
+    const index = playableContext.findIndex((song) => song.id === currentSong.id);
+    if (index > 0) {
+      playSong(playableContext[index - 1], { source: 'advance' });
       return;
     }
-    if (repeatMode === 'context' && visibleSongs.length > 0) {
-      playSong(visibleSongs[visibleSongs.length - 1], { source: 'advance' });
+    if (repeatMode === 'context' && playableContext.length > 0) {
+      playSong(playableContext[playableContext.length - 1], { source: 'advance' });
     }
-  }, [currentSong, shuffleOn, ensureShuffleCycle, playSongById, repeatMode, currentVisibleIndex, playSong, visibleSongs]);
+  }, [currentSong, shuffleOn, ensureShuffleCycle, playSongById, repeatMode, playableContext, playSong]);
 
   const setPlaylists = useCallback((next: (prev: typeof playlists) => typeof playlists) => {
     setPlaylistsState(prev => {
@@ -1111,6 +1160,7 @@ function App() {
         onToggleKeep={() => { void toggleKeep(); }}
         resolveAudioUrl={resolveAudioUrl}
         onLibraryUnavailable={markLibraryUnreachable}
+        localReady={localReady && localReady.songId === currentSong?.id ? localReady : null}
       />
 
       <div className={`flex flex-1 overflow-hidden ${isVizMaximized ? 'flex-col' : ''}`}>
@@ -1118,7 +1168,7 @@ function App() {
         {!isVizMaximized && !mobileCover && (!narrow || mobilePane === 'browse') && (
         <div className={`${narrow ? 'flex-1 min-w-0' : 'shrink-0'} h-full border-r border-gray-300 dark:border-gray-800 flex flex-col`} style={narrow ? undefined : { width: sidebarW }}>
           <Sidebar
-            songs={libraryFilter === 'all' ? songs : songs.filter((song) => (song.libraryId ?? LOCAL_LIBRARY_ID) === libraryFilter)}
+            songs={songs}
             filterType={filterType}
             setFilterType={setFilterType}
             filterValue={filterValue}
@@ -1139,8 +1189,6 @@ function App() {
             onPlayHistoryItem={playSong}
             onPlaylistsChange={setPlaylists}
             libraries={libraries.map((library) => ({ id: library.id, name: library.name, reachable: library.reachable }))}
-            libraryFilter={libraryFilter}
-            onLibraryFilter={setLibraryFilter}
             onAddLibrary={connectRemote}
             onRemoveLibrary={(id) => { void removeLibrary(id); }}
             onChooseFolder={() => { void chooseFolder(); }}

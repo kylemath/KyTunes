@@ -22,6 +22,10 @@ export interface Song {
   fileHandle?: FileSystemFileHandle;
   /** `0` is on this device. `1`, `2`, … are connected libraries. */
   libraryId?: string;
+  /** For a kept copy: the library it came from, so it still lists under that library. */
+  originLibraryId?: string;
+  /** The song's library cannot be reached right now. Shown from the last list, but it cannot stream. */
+  offline?: boolean;
   /** Id on the library server. The player id stays unique across libraries. */
   remoteId?: string;
   /** `remote` songs stream from a library. The first play saves a copy in the music folder. */

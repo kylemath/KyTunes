@@ -40,7 +40,16 @@ interface PlayerProps {
   onToggleKeep?: () => void;
   resolveAudioUrl?: (song: Song) => Promise<{ url: string; revoke: boolean }>;
   onLibraryUnavailable?: (libraryId: string) => void;
+  /** Set when the current song's local copy has finished saving. The player fades from the stream to it. */
+  localReady?: { songId: string; at: number } | null;
 }
+
+/** Length of the stream-to-local crossfade, in seconds. */
+const HANDOFF_FADE_SECONDS = 2;
+/** Dev check: play a short ding at the middle of the crossfade. Set to false once the fade is confirmed. */
+const HANDOFF_DING = true;
+/** How many times a dropped stream is reloaded before its library is marked offline. */
+const STREAM_RETRIES = 4;
 
 // ─── EQ definitions ──────────────────────────────────
 const EQ_BANDS = [
@@ -93,10 +102,23 @@ export function Player({
   onToggleKeep,
   resolveAudioUrl,
   onLibraryUnavailable,
+  localReady,
 }: PlayerProps) {
-  const audioRef    = useRef<HTMLAudioElement>(null);
+  // Two audio elements so the player can crossfade from the stream to the local copy.
+  // audioRef always points at the one being heard.
+  const audioARef   = useRef<HTMLAudioElement>(null);
+  const audioBRef   = useRef<HTMLAudioElement>(null);
+  const audioRef    = useRef<HTMLAudioElement | null>(null);
+  const gainsRef    = useRef(new Map<HTMLAudioElement, GainNode>());
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const sourceRef   = useRef<MediaElementAudioSourceNode | null>(null);
+  const handoffRef  = useRef<{ songId: string; cancelled: boolean } | null>(null);
+  /** Object URL of the local copy faded to. Released when the next song loads. */
+  const handoffUrlRef = useRef<string | null>(null);
+  const retryRef    = useRef<{ songId: string; count: number; timer: number | null }>({ songId: '', count: 0, timer: null });
+  const resumeAtRef = useRef<number | null>(null);
+  const isPlayingRef = useRef(isPlaying);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { if (!audioRef.current) audioRef.current = audioARef.current; }, []);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const eqFiltersRef = useRef<BiquadFilterNode[]>([]);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -134,11 +156,10 @@ export function Player({
 
   // ── Audio context + EQ chain ───────────────────────────────────────────────
   const ensureAudioContext = useCallback(() => {
-    if (audioCtxRef.current || !audioRef.current) return;
+    if (!audioRef.current) audioRef.current = audioARef.current;
+    if (audioCtxRef.current || !audioARef.current || !audioBRef.current) return;
     const ctx = new AudioContext();
     audioCtxRef.current = ctx;
-    const source = ctx.createMediaElementSource(audioRef.current);
-    sourceRef.current = source;
 
     const filters = EQ_BANDS.map((band, i) => {
       const f = ctx.createBiquadFilter();
@@ -150,8 +171,17 @@ export function Player({
     });
     eqFiltersRef.current = filters;
 
-    let prev: AudioNode = source;
-    for (const f of filters) { prev.connect(f); prev = f; }
+    // Each element has its own gain, so one can fade out while the other fades in.
+    for (const element of [audioARef.current, audioBRef.current]) {
+      const source = ctx.createMediaElementSource(element);
+      const gain = ctx.createGain();
+      gain.gain.value = element === audioRef.current ? 1 : 0;
+      source.connect(gain);
+      gain.connect(filters[0]);
+      gainsRef.current.set(element, gain);
+    }
+    let prev: AudioNode = filters[0];
+    for (const f of filters.slice(1)) { prev.connect(f); prev = f; }
 
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
@@ -167,14 +197,204 @@ export function Player({
     });
   }, [eqGains]);
 
+  const otherElement = () => (audioRef.current === audioARef.current ? audioBRef.current : audioARef.current);
+
+  /** Put the heard element at full gain and silence the other one. */
+  const setActiveGain = (value: number) => {
+    const ctx = audioCtxRef.current;
+    for (const [element, gain] of gainsRef.current) {
+      gain.gain.cancelScheduledValues(ctx?.currentTime ?? 0);
+      gain.gain.value = element === audioRef.current ? value : 0;
+    }
+  };
+
+  /** Stop a crossfade in progress and silence the element that was fading in. */
+  const cancelHandoff = () => {
+    if (handoffRef.current) handoffRef.current.cancelled = true;
+    handoffRef.current = null;
+    const other = otherElement();
+    if (other) {
+      other.pause();
+      other.removeAttribute('src');
+      other.load();
+    }
+  };
+
+  const playDing = (ctx: AudioContext, at: number) => {
+    const osc = ctx.createOscillator();
+    const env = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 1320;
+    env.gain.setValueAtTime(0, at);
+    env.gain.linearRampToValueAtTime(0.25, at + 0.01);
+    env.gain.exponentialRampToValueAtTime(0.0001, at + 0.6);
+    osc.connect(env);
+    env.connect(ctx.destination);
+    osc.start(at);
+    osc.stop(at + 0.65);
+  };
+
+  // ── Hand off from the stream to the local copy once it has saved ───────────
   useEffect(() => {
     const song = currentSong;
+    const from = audioRef.current;
+    const to = otherElement();
+    const ctx = audioCtxRef.current;
+    if (!localReady || !song || localReady.songId !== song.id || !from || !to || !resolveAudioUrl) return;
+    if (from.src.startsWith('blob:')) return; // Already playing a local file.
+    const job = { songId: song.id, cancelled: false };
+    if (handoffRef.current) handoffRef.current.cancelled = true;
+    handoffRef.current = job;
+    let localUrl: string | null = null;
+    void (async () => {
+      try {
+        const resolved = await resolveAudioUrl(song);
+        if (job.cancelled || !resolved.url.startsWith('blob:')) {
+          if (resolved.revoke) URL.revokeObjectURL(resolved.url);
+          return;
+        }
+        localUrl = resolved.url;
+        if (handoffUrlRef.current) URL.revokeObjectURL(handoffUrlRef.current);
+        handoffUrlRef.current = localUrl;
+        to.src = localUrl;
+        to.volume = muted ? 0 : volume;
+        await new Promise<void>((resolve, reject) => {
+          const ok = () => { cleanup(); resolve(); };
+          const bad = () => { cleanup(); reject(new Error('Local copy would not load')); };
+          const cleanup = () => { to.removeEventListener('canplay', ok); to.removeEventListener('error', bad); };
+          to.addEventListener('canplay', ok);
+          to.addEventListener('error', bad);
+          to.load();
+        });
+        if (job.cancelled) return;
+
+        const fromGain = gainsRef.current.get(from);
+        const toGain = gainsRef.current.get(to);
+        if (!isPlayingRef.current || from.paused || !ctx || !fromGain || !toGain) {
+          // Not playing: swap without a fade, at the same position.
+          to.currentTime = from.currentTime;
+          from.pause();
+          audioRef.current = to;
+          setActiveGain(1);
+          from.removeAttribute('src');
+          from.load();
+          return;
+        }
+
+        // Line the local copy up with what is playing, then fade across.
+        to.currentTime = from.currentTime;
+        await new Promise<void>((resolve) => {
+          const done = () => { to.removeEventListener('seeked', done); resolve(); };
+          to.addEventListener('seeked', done);
+          window.setTimeout(done, 500);
+        });
+        if (job.cancelled) return;
+        to.currentTime = from.currentTime + 0.02;
+        toGain.gain.value = 0;
+        await to.play();
+        if (job.cancelled) { to.pause(); return; }
+
+        const start = ctx.currentTime + 0.05;
+        const steps = 64;
+        const fadeOut = new Float32Array(steps);
+        const fadeIn = new Float32Array(steps);
+        for (let i = 0; i < steps; i++) {
+          const x = i / (steps - 1);
+          fadeOut[i] = Math.cos(x * Math.PI / 2); // equal-power
+          fadeIn[i] = Math.sin(x * Math.PI / 2);
+        }
+        fromGain.gain.cancelScheduledValues(start);
+        toGain.gain.cancelScheduledValues(start);
+        fromGain.gain.setValueCurveAtTime(fadeOut, start, HANDOFF_FADE_SECONDS);
+        toGain.gain.setValueCurveAtTime(fadeIn, start, HANDOFF_FADE_SECONDS);
+        if (HANDOFF_DING) playDing(ctx, start + HANDOFF_FADE_SECONDS / 2);
+
+        // From here the local copy is the one being heard and timed.
+        audioRef.current = to;
+        window.setTimeout(() => {
+          if (job.cancelled) return;
+          from.pause();
+          from.removeAttribute('src');
+          from.load();
+          if (handoffRef.current === job) handoffRef.current = null;
+        }, (HANDOFF_FADE_SECONDS + 0.2) * 1000);
+      } catch (error) {
+        console.warn('Stayed on the stream:', error);
+        if (localUrl && audioRef.current !== to) {
+          URL.revokeObjectURL(localUrl);
+          if (handoffUrlRef.current === localUrl) handoffUrlRef.current = null;
+        }
+        if (audioRef.current !== to) {
+          to.removeAttribute('src');
+          to.load();
+        }
+      }
+    })();
+    return () => { job.cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localReady?.songId, localReady?.at]);
+
+  // ── Reload a dropped stream instead of giving up on it ───────────────────────
+  const retryStream = useCallback((reason: string) => {
+    const song = currentSong;
+    const element = audioRef.current;
+    if (!song || !element || !resolveAudioUrl) return;
+    const retry = retryRef.current;
+    if (retry.songId !== song.id) return;
+    if (retry.timer) return; // A retry is already waiting.
+    if (retry.count >= STREAM_RETRIES) {
+      if (song.source === 'remote' && song.libraryId && song.libraryId !== '0') onLibraryUnavailable?.(song.libraryId);
+      return;
+    }
+    retry.count += 1;
+    if (resumeAtRef.current == null) resumeAtRef.current = currentTimeRef.current;
+    const delay = Math.min(8000, 1000 * 2 ** (retry.count - 1));
+    console.warn(`Stream ${reason}; reloading in ${delay} ms (try ${retry.count})`);
+    retry.timer = window.setTimeout(async () => {
+      retry.timer = null;
+      if (retryRef.current !== retry || audioRef.current !== element) return;
+      try {
+        // Prefers the local copy if it has finished saving.
+        const resolved = await resolveAudioUrl(song);
+        if (retryRef.current !== retry) return;
+        element.src = resolved.url;
+        element.load();
+        if (isPlayingRef.current) element.play().catch(() => { /* the error event retries */ });
+      } catch {
+        retryStream('could not resolve');
+      }
+    }, delay);
+  }, [currentSong, resolveAudioUrl, onLibraryUnavailable]);
+
+  useEffect(() => {
+    // Back online, or the phone woke up: retry a stalled stream straight away.
+    const kick = () => {
+      const element = audioRef.current;
+      const retry = retryRef.current;
+      if (!element || !retry.timer) return;
+      window.clearTimeout(retry.timer);
+      retry.timer = null;
+      retry.count = Math.max(0, retry.count - 1);
+      retryStream('back online');
+    };
+    window.addEventListener('online', kick);
+    return () => window.removeEventListener('online', kick);
+  }, [retryStream]);
+
+  useEffect(() => {
+    const song = currentSong;
+    if (!audioRef.current) audioRef.current = audioARef.current;
     if (!song || !audioRef.current) return;
     const created: { url: string | null } = { url: null };
     let cancelled = false;
+    cancelHandoff();
+    if (retryRef.current.timer) window.clearTimeout(retryRef.current.timer);
+    retryRef.current = { songId: song.id, count: 0, timer: null };
+    resumeAtRef.current = null;
     const loadAudio = async () => {
       try {
         ensureAudioContext();
+        setActiveGain(1);
         let url: string | null = null;
         if (resolveAudioUrl) {
           const resolved = await resolveAudioUrl(song);
@@ -194,6 +414,10 @@ export function Player({
         }
         if (!url || !audioRef.current || cancelled) return;
         audioRef.current.src = url;
+        if (handoffUrlRef.current) {
+          URL.revokeObjectURL(handoffUrlRef.current);
+          handoffUrlRef.current = null;
+        }
         audioRef.current.volume = volume;
         if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
         if (isPlaying) audioRef.current.play().catch(console.error);
@@ -218,12 +442,19 @@ export function Player({
         audioRef.current.play().catch(console.error);
       } else {
         audioRef.current.pause();
+        if (handoffRef.current) {
+          // Paused mid-fade: settle on the copy now being heard.
+          cancelHandoff();
+          setActiveGain(1);
+        }
       }
     }
   }, [isPlaying]);
 
   useEffect(() => {
-    if (audioRef.current) audioRef.current.volume = muted ? 0 : volume;
+    for (const element of [audioARef.current, audioBRef.current]) {
+      if (element) element.volume = muted ? 0 : volume;
+    }
   }, [volume, muted]);
 
   useEffect(() => {
@@ -243,8 +474,10 @@ export function Player({
   }, [onNext, onPrev, setIsPlaying]);
 
   // ── Playback event handlers ────────────────────────────────────────────────
-  const handleTimeUpdate = () => {
-    if (!audioRef.current) return;
+  const isActive = (e: React.SyntheticEvent<HTMLAudioElement>) => e.currentTarget === audioRef.current;
+
+  const handleTimeUpdate = (e: React.SyntheticEvent<HTMLAudioElement>) => {
+    if (!audioRef.current || !isActive(e) || resumeAtRef.current != null) return;
     const t = audioRef.current.currentTime;
     currentTimeRef.current = t;
     setCurrentTime(t);
@@ -256,8 +489,13 @@ export function Player({
     }
   };
 
-  const handleLoadedMetadata = () => {
-    if (!audioRef.current) return;
+  const handleLoadedMetadata = (e: React.SyntheticEvent<HTMLAudioElement>) => {
+    if (!audioRef.current || !isActive(e)) return;
+    if (resumeAtRef.current != null) {
+      // Coming back from a dropped stream: carry on where it stopped.
+      audioRef.current.currentTime = resumeAtRef.current;
+      resumeAtRef.current = null;
+    }
     const d = audioRef.current.duration;
     durationRef.current = d;
     setDuration(d);
@@ -293,7 +531,8 @@ export function Player({
     session.reported = true;
   }, [onTrackSessionComplete]);
 
-  const handleTrackEnded = useCallback(() => {
+  const handleTrackEnded = useCallback((e?: React.SyntheticEvent<HTMLAudioElement>) => {
+    if (e && e.currentTarget !== audioRef.current) return;
     reportActiveSession(durationRef.current || currentTimeRef.current);
     if (repeatMode === 'one' && currentSong && audioRef.current) {
       audioRef.current.currentTime = 0;
@@ -332,7 +571,9 @@ export function Player({
     durationRef.current = currentSong.duration || 0;
     setCurrentTime(0);
     setDuration(currentSong.duration || 0);
-  }, [currentSong, reportActiveSession]);
+    // A new song starts a new listening session. Tag or library changes to the same song do not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSong?.id, reportActiveSession]);
 
   useEffect(() => () => reportActiveSession(), [reportActiveSession]);
 
@@ -650,17 +891,32 @@ export function Player({
         </span>
       </div>
 
-      <audio
-        ref={audioRef}
-        onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={handleLoadedMetadata}
-        onEnded={handleTrackEnded}
-        onError={() => {
-          const song = currentSong;
-          if (song?.source === 'remote' && song.libraryId && song.libraryId !== '0') onLibraryUnavailable?.(song.libraryId);
-        }}
-        crossOrigin="anonymous"
-      />
+      {[audioARef, audioBRef].map((ref, i) => (
+        <audio
+          key={i}
+          ref={ref}
+          onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
+          onEnded={handleTrackEnded}
+          onPlaying={(e) => { if (isActive(e)) retryRef.current.count = 0; }}
+          onError={(e) => {
+            if (!isActive(e) || !e.currentTarget.getAttribute('src')) return;
+            retryStream('dropped');
+          }}
+          onStalled={(e) => {
+            // A stalled stream that has not recovered after a while gets reloaded.
+            const element = e.currentTarget;
+            if (!isActive(e) || element.src.startsWith('blob:')) return;
+            const at = element.currentTime;
+            window.setTimeout(() => {
+              if (audioRef.current === element && !element.paused && element.currentTime === at && element.readyState < 3) {
+                retryStream('stalled');
+              }
+            }, 8000);
+          }}
+          crossOrigin="anonymous"
+        />
+      ))}
     </div>
   );
 }

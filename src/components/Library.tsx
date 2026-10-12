@@ -66,7 +66,8 @@ function SongRow(props: { ariaAttributes: { "aria-posinset": number; "aria-setsi
   return (
     <div
       style={style}
-      className={`flex items-center px-4 text-sm cursor-default select-none group ${rowClassName(song.id === currentSongId, song.id === selectedSongId, index % 2 === 0)}`}
+      className={`flex items-center px-4 text-sm cursor-default select-none group ${rowClassName(song.id === currentSongId, song.id === selectedSongId, index % 2 === 0)} ${song.offline && song.id !== currentSongId ? 'opacity-50' : ''}`}
+      title={song.offline ? 'This library is offline. The song plays again when it reconnects.' : undefined}
       onClick={() => { if (compact) onPlay(song); else onSelect?.(song); }}
       onDoubleClick={() => onPlay(song)}
     >

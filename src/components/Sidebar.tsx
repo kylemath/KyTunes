@@ -45,8 +45,6 @@ interface SidebarProps {
   onPlayHistoryItem: (song: Song) => void;
   onPlaylistsChange: (updater: (prev: PlaylistItem[]) => PlaylistItem[]) => void;
   libraries: { id: string; name: string; reachable?: boolean }[];
-  libraryFilter: string;
-  onLibraryFilter: (id: string) => void;
   onAddLibrary: (url: string, password: string) => Promise<void>;
   onRemoveLibrary: (id: string) => void;
   onChooseFolder: () => void;
@@ -63,7 +61,7 @@ export function Sidebar({
   artistAvatars, albumArtworks, artistGroupOverrides, onArtistGroupOverridesChange,
   userQueue, queueSongs, onRemoveFromQueue, onClearQueue,
   onPlayHistoryItem, onPlaylistsChange,
-  libraries, libraryFilter, onLibraryFilter, onAddLibrary, onRemoveLibrary,
+  libraries, onAddLibrary, onRemoveLibrary,
   onChooseFolder, canPickFolder, canHost, onHost, connectError, connecting,
 }: SidebarProps) {
   const installedRole = (import.meta.env as { VITE_KYTUNES_ROLE?: string }).VITE_KYTUNES_ROLE;
@@ -287,30 +285,18 @@ npm run dev`}</pre>
       {/* Library shortcuts — fixed at top */}
       <div className="shrink-0 py-2">
         <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-4">Libraries</div>
-        <button
-          type="button"
-          onClick={() => { onLibraryFilter('0'); setFilterType('All'); setFilterValue(''); }}
-          className={`w-full text-left px-4 py-1.5 text-sm ${libraryFilter === '0' ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'}`}
-        >
-          0 · On this device
-        </button>
-        <button
-          type="button"
-          onClick={() => { onLibraryFilter('all'); setFilterType('All'); setFilterValue(''); }}
-          className={`w-full text-left px-4 py-1.5 text-sm ${libraryFilter === 'all' ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'}`}
-        >
-          All libraries
-        </button>
+        <div className="px-4 py-1 text-sm text-gray-700 dark:text-gray-300">
+          This device{libraries.length > 0 ? ' and servers below, in one list' : ''}
+        </div>
         {libraries.map((library) => (
-          <div key={library.id} className={`flex items-center pr-2 ${libraryFilter === library.id ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'}`}>
-            <button
-              type="button"
-              onClick={() => { onLibraryFilter(library.id); setFilterType('All'); setFilterValue(''); }}
-              title={library.reachable === false ? `${library.name} is not reachable. Its songs are hidden.` : library.name}
-              className={`flex-1 text-left px-4 py-1.5 text-sm truncate ${library.reachable === false ? 'opacity-60' : ''}`}
+          <div key={library.id} className="flex items-center pr-2 text-gray-700 dark:text-gray-300">
+            <span
+              title={library.reachable === false ? `${library.name} is not reachable. Its songs stay listed from the last connection and play again when it reconnects.` : library.name}
+              className={`flex-1 flex items-center gap-2 px-4 py-1.5 text-sm truncate ${library.reachable === false ? 'opacity-60' : ''}`}
             >
-              {library.id} · {library.name}{library.reachable === false ? ' · offline' : ''}
-            </button>
+              <span className={`inline-block w-2 h-2 rounded-full shrink-0 ${library.reachable === false ? 'bg-gray-400' : library.reachable ? 'bg-green-500' : 'bg-yellow-400'}`} />
+              <span className="truncate">{library.name}{library.reachable === false ? ' · offline' : ''}</span>
+            </span>
             <button
               type="button"
               onClick={() => onRemoveLibrary(library.id)}
