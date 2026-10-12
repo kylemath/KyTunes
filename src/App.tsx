@@ -69,6 +69,7 @@ function App() {
   const [keepBusy, setKeepBusy] = useState(false);
   const [mobilePane, setMobilePane] = useState<'songs' | 'browse'>('songs');
   const narrow = useNarrow();
+  const [transportSlot, setTransportSlot] = useState<HTMLDivElement | null>(null);
 
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [selectedSong, setSelectedSong] = useState<Song | null>(null);
@@ -1161,6 +1162,7 @@ function App() {
         resolveAudioUrl={resolveAudioUrl}
         onLibraryUnavailable={markLibraryUnreachable}
         localReady={localReady && localReady.songId === currentSong?.id ? localReady : null}
+        transportSlot={narrow ? transportSlot : null}
       />
 
       <div className={`flex flex-1 overflow-hidden ${isVizMaximized ? 'flex-col' : ''}`}>
@@ -1301,7 +1303,7 @@ function App() {
         )}
       </div>
       {narrow && !isVizMaximized && (
-        <nav className="shrink-0 flex border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#1a1a1a] pb-[env(safe-area-inset-bottom)]">
+        <nav className="shrink-0 flex border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#1a1a1a]">
           <button
             type="button"
             className={`flex-1 py-3 text-sm ${mobilePane === 'songs' && !showSongDetails ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500'}`}
@@ -1324,6 +1326,12 @@ function App() {
             Details
           </button>
         </nav>
+      )}
+      {narrow && (
+        <div
+          ref={setTransportSlot}
+          className="shrink-0 bg-gray-100 dark:bg-[#181818] border-t border-gray-200 dark:border-gray-800 pb-[env(safe-area-inset-bottom)]"
+        />
       )}
     </div>
   );

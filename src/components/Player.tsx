@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { PlayHistoryEntry, RepeatMode, Song } from '../types';
 import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Shuffle, Repeat, Repeat1, ListPlus, SlidersHorizontal, Download, Check, Loader2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import { PhoneShare } from './PhoneShare';
+import { setMediaActionHandler, setMediaMetadata, setMediaPosition } from '../lib/mediaSession';
 
 interface PlaylistItem {
   id: string;
@@ -42,6 +44,8 @@ interface PlayerProps {
   onLibraryUnavailable?: (libraryId: string) => void;
   /** Set when the current song's local copy has finished saving. The player fades from the stream to it. */
   localReady?: { songId: string; at: number } | null;
+  /** On phones, the transport controls render here (a bar at the bottom of the screen). */
+  transportSlot?: HTMLElement | null;
 }
 
 /** Length of the stream-to-local crossfade, in seconds. */
@@ -103,6 +107,7 @@ export function Player({
   resolveAudioUrl,
   onLibraryUnavailable,
   localReady,
+  transportSlot,
 }: PlayerProps) {
   // Two audio elements so the player can crossfade from the stream to the local copy.
   // audioRef always points at the one being heard.
@@ -457,19 +462,44 @@ export function Player({
     }
   }, [volume, muted]);
 
+  // ── System media card (notification shade, lock screen) ───────────────────
+  useEffect(() => {
+    void setMediaMetadata(currentSong, albumArtworkUrl);
+    // Tags can update while playing; re-send only when what the card shows changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSong?.id, currentSong?.title, currentSong?.artist, currentSong?.album, albumArtworkUrl]);
+
   useEffect(() => {
     if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.playbackState = currentSong ? (isPlaying ? 'playing' : 'paused') : 'none';
+    const element = audioRef.current;
+    if (element) setMediaPosition(element.currentTime, element.duration);
+  }, [isPlaying, currentSong]);
 
-    navigator.mediaSession.setActionHandler('play', () => setIsPlaying(true));
-    navigator.mediaSession.setActionHandler('pause', () => setIsPlaying(false));
-    navigator.mediaSession.setActionHandler('nexttrack', () => onNext());
-    navigator.mediaSession.setActionHandler('previoustrack', () => onPrev());
-
+  useEffect(() => {
+    const seekTo = (time: number) => {
+      const element = audioRef.current;
+      if (!element) return;
+      const d = element.duration || durationRef.current;
+      const t = Math.min(Math.max(time, 0), d || time);
+      element.currentTime = t;
+      currentTimeRef.current = t;
+      setCurrentTime(t);
+      setMediaPosition(t, d);
+    };
+    const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
+      ['play', () => setIsPlaying(true)],
+      ['pause', () => setIsPlaying(false)],
+      ['stop', () => setIsPlaying(false)],
+      ['nexttrack', () => onNext()],
+      ['previoustrack', () => onPrev()],
+      ['seekto', (d) => { if (d.seekTime != null) seekTo(d.seekTime); }],
+      ['seekbackward', (d) => seekTo((audioRef.current?.currentTime ?? 0) - (d.seekOffset ?? 10))],
+      ['seekforward', (d) => seekTo((audioRef.current?.currentTime ?? 0) + (d.seekOffset ?? 10))],
+    ];
+    for (const [action, handler] of handlers) setMediaActionHandler(action, handler);
     return () => {
-      navigator.mediaSession.setActionHandler('play', null);
-      navigator.mediaSession.setActionHandler('pause', null);
-      navigator.mediaSession.setActionHandler('nexttrack', null);
-      navigator.mediaSession.setActionHandler('previoustrack', null);
+      for (const [action] of handlers) setMediaActionHandler(action, null);
     };
   }, [onNext, onPrev, setIsPlaying]);
 
@@ -500,12 +530,17 @@ export function Player({
     durationRef.current = d;
     setDuration(d);
     onTimeUpdate?.(currentTimeRef.current, d);
+    setMediaPosition(currentTimeRef.current, d);
     if (activeSessionRef.current) activeSessionRef.current.songDuration = d;
   };
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const t = Number(e.target.value);
-    if (audioRef.current) { audioRef.current.currentTime = t; setCurrentTime(t); }
+    if (audioRef.current) {
+      audioRef.current.currentTime = t;
+      setCurrentTime(t);
+      setMediaPosition(t, audioRef.current.duration);
+    }
   };
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -614,48 +649,105 @@ export function Player({
     return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
   };
 
+  const toggleClass = (on: boolean) =>
+    `w-11 h-11 flex items-center justify-center rounded-full transition ${on ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 active:bg-gray-200 dark:text-gray-400 dark:active:bg-gray-800'}`;
+
+  // Phone layout: big thumb-sized controls, shown at the bottom of the screen.
+  const mobileTransport = (
+    <div className="grid grid-cols-[1fr_auto_1fr] items-center px-3 pt-2 pb-3">
+      <div className="flex items-center gap-1 justify-self-start">
+        <button type="button" onClick={onShuffleToggle} className={toggleClass(shuffleOn)} title="Shuffle" aria-pressed={shuffleOn}>
+          <Shuffle size={22} />
+        </button>
+        <PhoneShare />
+      </div>
+      <div className="flex items-center gap-3">
+        <button type="button" className="w-14 h-14 flex items-center justify-center rounded-full text-gray-700 active:bg-gray-200 dark:text-gray-200 dark:active:bg-gray-800 transition" onClick={onPrev} title="Previous" aria-label="Previous">
+          <SkipBack size={32} fill="currentColor" />
+        </button>
+        <button
+          type="button"
+          className="w-16 h-16 rounded-full bg-blue-600 active:bg-blue-700 active:scale-95 text-white flex items-center justify-center shadow-lg shadow-blue-600/30 transition"
+          onClick={() => setIsPlaying(!isPlaying)}
+          title={isPlaying ? 'Pause' : 'Play'}
+          aria-label={isPlaying ? 'Pause' : 'Play'}
+        >
+          {isPlaying
+            ? <Pause size={30} fill="currentColor" />
+            : <Play  size={30} fill="currentColor" className="ml-1" />}
+        </button>
+        <button type="button" className="w-14 h-14 flex items-center justify-center rounded-full text-gray-700 active:bg-gray-200 dark:text-gray-200 dark:active:bg-gray-800 transition" onClick={onNext} title="Next" aria-label="Next">
+          <SkipForward size={32} fill="currentColor" />
+        </button>
+      </div>
+      <div className="flex items-center gap-1 justify-self-end">
+        <button
+          type="button"
+          onClick={() => onRepeatModeChange?.(repeatMode === 'context' ? 'off' : 'context')}
+          className={toggleClass(repeatMode === 'context')}
+          title="Repeat current view"
+          aria-pressed={repeatMode === 'context'}
+        >
+          <Repeat size={22} />
+        </button>
+        <button
+          type="button"
+          onClick={() => onRepeatModeChange?.(repeatMode === 'one' ? 'off' : 'one')}
+          className={toggleClass(repeatMode === 'one')}
+          title="Repeat current song"
+          aria-pressed={repeatMode === 'one'}
+        >
+          <Repeat1 size={22} />
+        </button>
+      </div>
+    </div>
+  );
+
+  const desktopTransport = (
+    <div className="flex items-center gap-2 max-md:gap-1 max-md:justify-center justify-self-start max-md:justify-self-center max-md:overflow-x-auto">
+      <button
+        onClick={onShuffleToggle}
+        className={`p-1.5 rounded transition ${shuffleOn ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'}`}
+        title="Shuffle"
+      >
+        <Shuffle size={20} />
+      </button>
+      <PhoneShare />
+      <button
+        onClick={() => onRepeatModeChange?.(repeatMode === 'context' ? 'off' : 'context')}
+        className={`p-1.5 rounded transition ${repeatMode === 'context' ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'}`}
+        title="Repeat current view"
+      >
+        <Repeat size={20} />
+      </button>
+      <button
+        onClick={() => onRepeatModeChange?.(repeatMode === 'one' ? 'off' : 'one')}
+        className={`p-1.5 rounded transition ${repeatMode === 'one' ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'}`}
+        title="Repeat current song"
+      >
+        <Repeat1 size={20} />
+      </button>
+      <button className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white transition" onClick={onPrev}>
+        <SkipBack size={24} fill="currentColor" />
+      </button>
+      <button
+        className="w-10 h-10 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition"
+        onClick={() => setIsPlaying(!isPlaying)}
+      >
+        {isPlaying
+          ? <Pause size={20} fill="currentColor" />
+          : <Play  size={20} fill="currentColor" className="ml-1" />}
+      </button>
+      <button className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white transition" onClick={onNext}>
+        <SkipForward size={24} fill="currentColor" />
+      </button>
+    </div>
+  );
+
   return (
     <div className="h-20 max-md:h-auto bg-gray-100 dark:bg-[#181818] grid grid-cols-[minmax(max-content,1fr)_minmax(0,36rem)_minmax(max-content,1fr)] max-md:grid-cols-1 items-center gap-4 max-md:gap-2 px-6 max-md:px-3 max-md:py-2 min-w-0 shrink-0 z-20 shadow-sm border-b border-gray-200 dark:border-gray-800">
 
-      {/* ── Transport controls ── */}
-      <div className="flex items-center gap-2 max-md:gap-1 max-md:justify-center justify-self-start max-md:justify-self-center max-md:overflow-x-auto">
-        <button
-          onClick={onShuffleToggle}
-          className={`p-1.5 rounded transition ${shuffleOn ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'}`}
-          title="Shuffle"
-        >
-          <Shuffle size={20} />
-        </button>
-        <PhoneShare />
-        <button
-          onClick={() => onRepeatModeChange?.(repeatMode === 'context' ? 'off' : 'context')}
-          className={`p-1.5 rounded transition ${repeatMode === 'context' ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'}`}
-          title="Repeat current view"
-        >
-          <Repeat size={20} />
-        </button>
-        <button
-          onClick={() => onRepeatModeChange?.(repeatMode === 'one' ? 'off' : 'one')}
-          className={`p-1.5 rounded transition ${repeatMode === 'one' ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'}`}
-          title="Repeat current song"
-        >
-          <Repeat1 size={20} />
-        </button>
-        <button className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white transition" onClick={onPrev}>
-          <SkipBack size={24} fill="currentColor" />
-        </button>
-        <button
-          className="w-10 h-10 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition"
-          onClick={() => setIsPlaying(!isPlaying)}
-        >
-          {isPlaying
-            ? <Pause size={20} fill="currentColor" />
-            : <Play  size={20} fill="currentColor" className="ml-1" />}
-        </button>
-        <button className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white transition" onClick={onNext}>
-          <SkipForward size={24} fill="currentColor" />
-        </button>
-      </div>
+      {transportSlot ? createPortal(mobileTransport, transportSlot) : desktopTransport}
 
       {/* ── Center LCD ── */}
       <div className="min-w-0 w-full overflow-hidden">
