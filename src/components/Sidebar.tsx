@@ -66,8 +66,9 @@ export function Sidebar({
   libraries, libraryFilter, onLibraryFilter, onAddLibrary, onRemoveLibrary,
   onChooseFolder, canPickFolder, canHost, onHost, connectError, connecting,
 }: SidebarProps) {
+  const installedRole = (import.meta.env as { VITE_KYTUNES_ROLE?: string }).VITE_KYTUNES_ROLE;
   const [showAddServer, setShowAddServer] = useState(false);
-  const [showHost, setShowHost] = useState(false);
+  const [showHost, setShowHost] = useState(installedRole === 'server');
   const [showServeHelp, setShowServeHelp] = useState(false);
   const [serveOs, setServeOs] = useState<'mac' | 'windows'>(() =>
     typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent) ? 'windows' : 'mac',
@@ -94,6 +95,17 @@ export function Sidebar({
   const [aiResult, setAiResult] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   const [showOverridesPanel, setShowOverridesPanel] = useState(false);
+
+  useEffect(() => {
+    if (installedRole !== 'server') return;
+    fetch('/dev-host')
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = await res.json() as { musicDir?: string };
+        if (data.musicDir) setMusicDir(data.musicDir);
+      })
+      .catch(() => {});
+  }, [installedRole]);
 
   // ── Artist groups (memoised, includes overrides) ─────────────────────────
   const artistGroups = useMemo(
@@ -352,6 +364,16 @@ npm run dev`}</pre>
           <button type="button" onClick={onChooseFolder} className="w-full text-left px-4 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800">
             Choose a music folder
           </button>
+        )}
+        {installedRole === 'server' && (
+          <p className="px-4 pt-1 text-xs text-gray-500 dark:text-gray-400">
+            This computer hosts the music. Choose the folder and a password.
+          </p>
+        )}
+        {installedRole === 'client' && (
+          <p className="px-4 pt-1 text-xs text-gray-500 dark:text-gray-400">
+            This computer plays music from a library hosted somewhere else.
+          </p>
         )}
         {canHost ? (
           <button type="button" onClick={() => setShowHost((open) => !open)} className="w-full text-left px-4 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800">

@@ -1,5 +1,13 @@
 export type SongSource = 'local' | 'remote';
 
+export interface SongLineage {
+  originAddress: string;
+  originSongId: string;
+  /** Oldest first. The first address is the library the file originally streamed from. */
+  addresses: string[];
+  blockHash: string;
+}
+
 export interface Song {
   id: string; // File path or relative path
   title: string;
@@ -16,8 +24,10 @@ export interface Song {
   libraryId?: string;
   /** Id on the library server. The player id stays unique across libraries. */
   remoteId?: string;
-  /** `remote` songs stream from a library until the first play saves a copy here. */
+  /** `remote` songs stream from a library. The first play saves a copy in the music folder. */
   source?: SongSource;
+  /** Where this file was first loaded, and each library it has passed through. */
+  lineage?: SongLineage;
   /** Authenticated stream URL. Rebuilt when the session changes, not stored as the cache. */
   streamUrl?: string;
   // Extended tags

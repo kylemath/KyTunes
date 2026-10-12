@@ -21,6 +21,7 @@ interface SongDetailsPaneProps {
   onCreatePlaylistAndAdd: (songId: string, name: string) => void;
   onArtistClick: (artist: string) => void;
   onAlbumClick: (album: string) => void;
+  onLoadOriginal?: () => void;
 }
 
 function fmt(t: number) {
@@ -56,7 +57,7 @@ export function SongDetailsPane({
   song, isCurrentSong, stats, playlists,
   artworkUrl, onArtworkFound, artistUrl, onArtistImageFound,
   onPlay, onAddToQueue, onAddToPlaylist, onCreatePlaylistAndAdd,
-  onArtistClick, onAlbumClick,
+  onArtistClick, onAlbumClick, onLoadOriginal,
 }: SongDetailsPaneProps) {
   const [displayUrl, setDisplayUrl] = useState<string | undefined>(artworkUrl);
   const [artworkLoading, setArtworkLoading] = useState(false);
@@ -329,6 +330,19 @@ export function SongDetailsPane({
             <span className="text-[12px] text-gray-700 dark:text-gray-300 break-all min-w-0 leading-4">{song.id}</span>
           </div>
         </Section>
+
+        {song.lineage && (
+          <Section title="Source">
+            <Row label="Original" value={song.lineage.originAddress} />
+            <Row label="First file" value={song.lineage.originSongId} />
+            <Row label="Path" value={song.lineage.addresses.join(' → ')} />
+            {onLoadOriginal && song.lineage.addresses.length > 1 && (
+              <button type="button" onClick={onLoadOriginal} className="mt-2 text-xs text-blue-600 dark:text-blue-400">
+                Load original
+              </button>
+            )}
+          </Section>
+        )}
       </div>
     </div>
   );

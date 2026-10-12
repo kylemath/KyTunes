@@ -6,7 +6,8 @@ import type { AlbumArtworkResult } from './lib/artwork';
 import { searchArtistImage, searchAlbumArtwork } from './lib/artwork';
 import { collectFiles, parseMetadataInBackground } from './lib/scanner';
 import { downloadRemoteSong, fetchRemoteLibrary, loginRemote, normalizeServerUrl, probeLibrary, requestRemoteRescan, RemoteAuthError } from './lib/remoteLibrary';
-import { libraryName, LOCAL_LIBRARY_ID, mergeCatalog, nextLibraryId, plainKeptRecord, type ConnectedLibrary, type KeptSongRecord } from './lib/catalog';
+import { depositIncoming, ensureFolderChain, lineageForSong, rememberedLineage } from './lib/deposit';
+import { libraryName, LOCAL_LIBRARY_ID, mergeCatalog, nextLibraryId, plainKeptRecord, playerSongId, type ConnectedLibrary, type KeptSongRecord } from './lib/catalog';
 import { Player } from './components/Player';
 import { Sidebar } from './components/Sidebar';
 import { Library } from './components/Library';
@@ -153,6 +154,13 @@ function App() {
       const initialSongs = await collectFiles(handle, (count) => {
         setLoadingStatus(`Found ${count} files...`);
       });
+      const chain = await ensureFolderChain(handle, window.location.origin);
+      if (chain) {
+        for (const song of initialSongs) {
+          const lineage = lineageForSong(chain, song.id);
+          if (lineage) song.lineage = lineage;
+        }
+      }
       setLoadingStatus(`Found ${initialSongs.length} songs. Loading...`);
       partsRef.current.folder = initialSongs;
       publishCatalog();
@@ -370,7 +378,13 @@ function App() {
 
   const selectFolder = async () => {
     try {
-      const handle = await (window as any).showDirectoryPicker();
+      let handle: FileSystemDirectoryHandle;
+      try {
+        handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' });
+      } catch (error) {
+        if ((error as { name?: string }).name === 'AbortError') return;
+        handle = await (window as any).showDirectoryPicker();
+      }
       setDirHandle(handle);
       await saveDirectoryHandle(handle);
       setLibraryMode('local');
@@ -471,25 +485,46 @@ function App() {
     setKeepBusy(true);
     setLoadingStatus('Saving a copy on this device…');
     try {
-      const blob = await downloadRemoteSong(library.session, song.remoteId, (loaded, total) => {
+      const downloaded = await downloadRemoteSong(library.session, song.remoteId, (loaded, total) => {
         if (total > 0) {
           const pct = Math.min(100, Math.round((loaded / total) * 100));
           setLoadingStatus(`Saving a copy on this device… ${pct}%`);
         }
       });
-      await saveKeptAudio(song.id, blob);
+      const sourceAddress = library.baseUrl || window.location.origin;
+      const prior = downloaded.lineage ?? song.lineage ?? null;
+      const localSession = library.baseUrl
+        ? partsRef.current.libraries.find((item) => item.baseUrl === '')?.session
+        : undefined;
+      let lineage = prior ?? undefined;
+      let deposited = false;
+      if (library.baseUrl) {
+        setLoadingStatus('Saving into the music folder…');
+        const saved = await depositIncoming({
+          blob: downloaded.blob,
+          sourceAddress,
+          sourceSongId: song.remoteId,
+          prior,
+          localSession,
+          dirHandle,
+          localAddress: window.location.origin,
+        });
+        deposited = Boolean(saved);
+        lineage = saved?.lineage ?? rememberedLineage(sourceAddress, song.remoteId, prior, window.location.origin) ?? lineage;
+      }
+      await saveKeptAudio(song.id, downloaded.blob);
       const record = plainKeptRecord({
         id: song.id,
         remoteId: song.remoteId,
         originLibraryId: song.libraryId,
         baseUrl: library.baseUrl,
-        song,
+        song: lineage ? { ...song, lineage } : song,
       });
       partsRef.current.kept = [...partsRef.current.kept.filter((item) => item.id !== song.id), record];
       await saveKeptSongRecords(partsRef.current.kept);
       publishCatalog();
-      setCurrentSong((prev) => prev && prev.id === song.id ? { ...prev, libraryId: LOCAL_LIBRARY_ID, source: 'local', streamUrl: undefined } : prev);
-      setLoadingStatus('');
+      setCurrentSong((prev) => prev && prev.id === song.id ? { ...prev, libraryId: LOCAL_LIBRARY_ID, source: 'local', streamUrl: undefined, lineage: lineage ?? prev.lineage } : prev);
+      setLoadingStatus(library.baseUrl && !deposited ? 'Saved on this device. Choose a music folder to keep the file there.' : '');
     } catch (error) {
       const name = (error as { name?: string }).name;
       setLoadingStatus(name === 'QuotaExceededError'
@@ -499,7 +534,7 @@ function App() {
       downloadingRef.current.delete(song.id);
       setKeepBusy(false);
     }
-  }, [publishCatalog]);
+  }, [publishCatalog, dirHandle]);
 
   const forgetRemoteCopy = useCallback(async (song: Song) => {
     partsRef.current.kept = partsRef.current.kept.filter((record) => record.id !== song.id);
@@ -726,6 +761,30 @@ function App() {
     const song = songMap.get(songId);
     if (song) playSong(song, options);
   }, [songMap, playSong]);
+
+  const loadOriginal = useCallback((song: Song) => {
+    const lineage = song.lineage;
+    if (!lineage) return;
+    const origin = lineage.originAddress.replace(/\/$/, '');
+    const library = partsRef.current.libraries.find((item) => (item.baseUrl || window.location.origin).replace(/\/$/, '') === origin);
+    if (!library || library.reachable === false) {
+      setConnectError(`Add ${lineage.originAddress} to load the original stream.`);
+      return;
+    }
+    const match = library.songs.find((item) => (item.remoteId || item.id) === lineage.originSongId);
+    if (!match) {
+      setConnectError(`The original file is not listed at ${lineage.originAddress}.`);
+      return;
+    }
+    playSong({
+      ...match,
+      id: playerSongId(library.id, lineage.originSongId),
+      remoteId: lineage.originSongId,
+      libraryId: library.id,
+      source: 'remote',
+      lineage: match.lineage ?? lineage,
+    });
+  }, [playSong]);
 
   const selectSong = useCallback((song: Song) => { setSelectedSong(song); }, []);
   const currentVisibleIndex = currentSong ? visibleSongs.findIndex(s => s.id === currentSong.id) : -1;
@@ -1170,6 +1229,7 @@ function App() {
                 }}
                 onArtistClick={(artist) => { setFilterType('Artists'); setFilterValue(artist); }}
                 onAlbumClick={(album)  => { setFilterType('Albums');  setFilterValue(album); }}
+                onLoadOriginal={() => loadOriginal(displaySong)}
               />
             </div>
           </>

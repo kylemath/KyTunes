@@ -1,4 +1,5 @@
-import type { Song } from '../types';
+import type { Song, SongLineage } from '../types';
+import { decodeLineage } from './lineage';
 
 export interface RemoteSession {
   /** Empty string means the page and the library are the same origin. */
@@ -87,7 +88,7 @@ export async function fetchRemoteLibrary(session: RemoteSession): Promise<Remote
   } catch {
     throw new Error('Could not reach the library server.');
   }
-  const data = await res.json().catch(() => ({})) as Partial<RemoteLibraryPayload> & { error?: string };
+  const data = await res.json().catch(() => ({})) as Partial<RemoteLibraryPayload> & { error?: string; songs?: Array<Song & { lineage?: Song['lineage'] }> };
   if (res.status === 401) throw new RemoteAuthError(data.error);
   if (!res.ok || !Array.isArray(data.songs)) {
     throw new Error(data.error || `Could not load the library (${res.status})`);
@@ -132,10 +133,11 @@ export async function downloadRemoteSong(
   songId: string,
   onProgress?: (loaded: number, total: number) => void,
   signal?: AbortSignal,
-): Promise<Blob> {
+): Promise<{ blob: Blob; lineage: SongLineage | null }> {
   const res = await fetch(streamUrlFor(session, songId), { signal });
   if (res.status === 401) throw new RemoteAuthError();
   if (!res.ok || !res.body) throw new Error('Could not download that song.');
+  const lineage = decodeLineage(res.headers.get('X-KyTunes-Lineage'));
   const total = Number(res.headers.get('Content-Length') || 0);
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -150,5 +152,5 @@ export async function downloadRemoteSong(
     }
   }
   const type = res.headers.get('Content-Type') || 'audio/mpeg';
-  return new Blob(chunks as BlobPart[], { type });
+  return { blob: new Blob(chunks as BlobPart[], { type }), lineage };
 }

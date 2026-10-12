@@ -30,6 +30,7 @@ node_modules/.package-lock.json
 build/
 dev-dist/
 .localplayer.log
+.kytunes-role
 favicon.ico
 
 # Library server (password hash and local catalog)

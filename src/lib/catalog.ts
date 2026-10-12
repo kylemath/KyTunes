@@ -82,12 +82,17 @@ export function mergeCatalog(input: {
     fileHandle: undefined,
   }));
   const keptKeys = new Set(input.kept.map((record) => `${record.originLibraryId}:${record.remoteId}`));
+  const keptOrigins = new Set(input.kept.flatMap((record) => {
+    const lineage = record.song.lineage;
+    return lineage ? [`${lineage.originAddress}\n${lineage.originSongId}`] : [];
+  }));
   const remote: Song[] = [];
   for (const library of input.libraries) {
     if (library.reachable !== true) continue;
     for (const song of library.songs) {
       const remoteId = song.remoteId || song.id;
       if (keptKeys.has(`${library.id}:${remoteId}`)) continue;
+      if (song.lineage && keptOrigins.has(`${song.lineage.originAddress}\n${song.lineage.originSongId}`)) continue;
       remote.push({
         ...song,
         id: playerSongId(library.id, remoteId),

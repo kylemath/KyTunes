@@ -15,6 +15,17 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { scrypt, randomBytes, timingSafeEqual, createHmac } from 'node:crypto';
 import { parseFile } from 'music-metadata';
+import {
+  appendBlock,
+  createGenesis,
+  decodeLineage,
+  encodeLineage,
+  extendLineage,
+  findSaved,
+  implicitLineage,
+  normalizeAddress,
+  verifyChain,
+} from './lineage.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const configPath = path.join(root, 'library.config.json');
@@ -57,7 +68,11 @@ const state = {
   enrichDone: 0,
   enrichTotal: 0,
   generation: 0,
+  chain: null,
 };
+
+const INGEST_LIMIT = 80_000_000;
+let chainQueue = Promise.resolve();
 
 const loginFailures = new Map();
 
@@ -426,14 +441,124 @@ async function scan(config) {
   console.log(`Library ready: ${state.songs.length} songs`);
 }
 
+function withLineage(song) {
+  if (!state.chain) return song;
+  return { ...song, lineage: implicitLineage(state.chain, song.id) };
+}
+
 function libraryPayload() {
   return {
-    songs: state.songs,
+    songs: state.songs.map(withLineage),
     scanning: state.scanning,
     enriching: state.enriching,
     enrichDone: state.enrichDone,
     enrichTotal: state.enrichTotal,
+    chainAddress: state.chain?.genesisAddress || '',
   };
+}
+
+function withChain(task) {
+  const run = chainQueue.then(task, task);
+  chainQueue = run.then(() => {}, () => {});
+  return run;
+}
+
+function chainPaths(musicDir) {
+  const dir = path.join(musicDir, '.kytunes');
+  return { dir, file: path.join(dir, 'chain.json') };
+}
+
+async function loadChain(musicDir, address) {
+  const { file } = chainPaths(musicDir);
+  try {
+    const chain = JSON.parse(await fs.readFile(file, 'utf8'));
+    if (!verifyChain(chain)) {
+      console.error('Library chain does not check out. Incoming songs will not be added until it is repaired.');
+      state.chain = null;
+      return;
+    }
+    state.chain = chain;
+    console.log(`Library chain: ${chain.blocks.length} blocks from ${chain.genesisAddress}`);
+  } catch (error) {
+    if (error && error.code !== 'ENOENT') throw error;
+    const chain = createGenesis(address);
+    await saveChain(musicDir, chain);
+    state.chain = chain;
+    console.log(`Library chain started at ${chain.genesisAddress}`);
+  }
+}
+
+async function saveChain(musicDir, chain) {
+  const { dir, file } = chainPaths(musicDir);
+  await fs.mkdir(dir, { recursive: true });
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(chain));
+  await fs.rename(tmp, file);
+}
+
+function safeSongPath(songId) {
+  if (!songId || songId.includes('\0') || songId.includes('\\')) return null;
+  const normalized = String(songId).replace(/^\.\/+/, '').replace(/^\/+/, '');
+  if (!normalized || normalized.split('/').some((part) => part === '..' || part === '.')) return null;
+  if (!AUDIO_EXTENSIONS.has(extensionOf(normalized))) return null;
+  const parts = normalized.split('/').map((part) => part.replace(/^\.+/, '').trim().slice(0, 180)).filter(Boolean);
+  if (parts.length === 0) return null;
+  return parts.join('/');
+}
+
+function incomingRelative(sourceAddress, songId) {
+  const relative = safeSongPath(songId);
+  const source = normalizeAddress(sourceAddress);
+  if (!relative || !source) return null;
+  const host = new URL(source).host.replace(/[^a-zA-Z0-9._-]/g, '_') || 'library';
+  return `Incoming/${host}/${relative}`;
+}
+
+async function ingestSong(config, { sourceAddress, songId, prior, bytes }) {
+  return withChain(async () => {
+    if (!state.chain) throw new Error('The library chain is not ready.');
+    const localAddress = state.chain.genesisAddress;
+    const draft = extendLineage({
+      prior,
+      sourceAddress,
+      sourceSongId: songId,
+      localAddress,
+    });
+    const existing = findSaved(state.chain, draft.originAddress, draft.originSongId);
+    if (existing) {
+      if (resolveTrack(config.musicDir, existing)) {
+        return { localId: existing, lineage: implicitLineage(state.chain, existing), created: false };
+      }
+      delete state.chain.files[existing];
+    }
+    const localId = incomingRelative(sourceAddress, songId);
+    const full = resolveTrack(config.musicDir, localId || '');
+    if (!localId || !full) throw new Error('That song path cannot be saved.');
+    await fs.mkdir(path.dirname(full), { recursive: true });
+    const tmp = `${full}.partial`;
+    await fs.writeFile(tmp, bytes);
+    await fs.rename(tmp, full);
+    const block = appendBlock(state.chain, { address: sourceAddress, songId, localId });
+    const lineage = { ...draft, blockHash: block.hash };
+    state.chain.files[localId] = lineage;
+    await saveChain(config.musicDir, state.chain);
+    if (!state.byId.has(localId)) {
+      const name = localId.split('/').pop();
+      const inferred = inferFromPath(localId, name);
+      const song = {
+        id: localId,
+        title: inferred.title,
+        artist: inferred.artist,
+        album: inferred.album,
+        duration: 0,
+        source: 'remote',
+      };
+      state.songs.push(song);
+      state.byId.set(localId, song);
+      await writeCache().catch(() => {});
+    }
+    return { localId, lineage, created: true };
+  });
 }
 
 function clientIp(req) {
@@ -465,8 +590,8 @@ function applyCors(req, res) {
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Range');
-  res.setHeader('Access-Control-Expose-Headers', 'Accept-Ranges, Content-Range, Content-Length, Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Range, X-KyTunes-Source, X-KyTunes-Song-Id, X-KyTunes-Lineage');
+  res.setHeader('Access-Control-Expose-Headers', 'Accept-Ranges, Content-Range, Content-Length, Content-Type, X-KyTunes-Lineage');
   res.setHeader('Access-Control-Allow-Private-Network', 'true');
 }
 
@@ -505,7 +630,7 @@ function authorized(req, url, config) {
   return verifyToken(config.tokenSecret, token);
 }
 
-async function streamFile(req, res, filePath) {
+async function streamFile(req, res, filePath, lineageHeader = '') {
   let stat;
   try {
     stat = await fs.stat(filePath);
@@ -516,12 +641,14 @@ async function streamFile(req, res, filePath) {
   const type = AUDIO_TYPES[extensionOf(filePath)] || 'application/octet-stream';
   const total = stat.size;
   const range = req.headers.range;
+  const lineageHeaders = lineageHeader ? { 'X-KyTunes-Lineage': lineageHeader } : {};
   if (req.method === 'HEAD') {
     res.writeHead(200, {
       'Content-Type': type,
       'Content-Length': total,
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'private, max-age=3600',
+      ...lineageHeaders,
     });
     res.end();
     return;
@@ -547,6 +674,7 @@ async function streamFile(req, res, filePath) {
       'Content-Range': `bytes ${start}-${end}/${total}`,
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'private, max-age=3600',
+      ...lineageHeaders,
     });
     const stream = createReadStream(filePath, { start, end });
     stream.on('error', () => res.destroy());
@@ -559,6 +687,7 @@ async function streamFile(req, res, filePath) {
     'Content-Length': total,
     'Accept-Ranges': 'bytes',
     'Cache-Control': 'private, max-age=3600',
+    ...lineageHeaders,
   });
   const stream = createReadStream(filePath);
   stream.on('error', () => res.destroy());
@@ -629,6 +758,8 @@ async function main() {
     return;
   }
   const config = await loadConfig(args);
+  const folderAddress = lanUrls(config.port)[0] || `http://127.0.0.1:${config.port}`;
+  await loadChain(config.musicDir, folderAddress);
   await loadCache();
   void scan(config);
 
@@ -693,12 +824,46 @@ async function main() {
           sendJson(res, 401, { error: 'Sign in required.' });
           return;
         }
-        const filePath = resolveTrack(config.musicDir, url.searchParams.get('id') || '');
+        const songId = url.searchParams.get('id') || '';
+        const filePath = resolveTrack(config.musicDir, songId);
         if (!filePath) {
           sendJson(res, 400, { error: 'Unknown song.' });
           return;
         }
-        await streamFile(req, res, filePath);
+        const lineageHeader = state.chain ? encodeLineage(implicitLineage(state.chain, songId)) : '';
+        await streamFile(req, res, filePath, lineageHeader);
+        return;
+      }
+      if (url.pathname === '/api/ingest' && req.method === 'POST') {
+        if (!authorized(req, url, config)) {
+          sendJson(res, 401, { error: 'Sign in required.' });
+          return;
+        }
+        const sourceAddress = normalizeAddress(String(req.headers['x-kytunes-source'] || ''));
+        let songId = '';
+        try {
+          songId = decodeURIComponent(String(req.headers['x-kytunes-song-id'] || ''));
+        } catch {
+          songId = '';
+        }
+        if (!sourceAddress || !safeSongPath(songId)) {
+          sendJson(res, 400, { error: 'The source library and song id are required.' });
+          return;
+        }
+        const prior = decodeLineage(String(req.headers['x-kytunes-lineage'] || ''));
+        let bytes;
+        try {
+          bytes = await readBody(req, INGEST_LIMIT);
+        } catch {
+          sendJson(res, 413, { error: 'That song is too large to save.' });
+          return;
+        }
+        if (!bytes.length) {
+          sendJson(res, 400, { error: 'The song file was empty.' });
+          return;
+        }
+        const saved = await ingestSong(config, { sourceAddress, songId, prior, bytes });
+        sendJson(res, 200, { localId: saved.localId, lineage: saved.lineage });
         return;
       }
       if (url.pathname.startsWith('/api/')) {
