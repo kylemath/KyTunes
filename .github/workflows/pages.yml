@@ -1,8 +1,10 @@
 name: Deploy GitHub Pages
 
+# main is served at /KyTunes/; every other branch at /KyTunes/preview/<branch>/.
 on:
   push:
-    branches: [main]
+    branches: ['**']
+  delete:
   workflow_dispatch:
 
 permissions:
@@ -19,15 +21,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build:pages
+      - run: ./scripts/build-pages-previews.sh site
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: dist
+          path: site
 
   deploy:
     needs: build

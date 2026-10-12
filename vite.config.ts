@@ -140,8 +140,11 @@ function readRequestBody(req: import('node:http').IncomingMessage): Promise<stri
 
 export default defineConfig(({ mode }) => {
   const pages = mode === 'pages'
+  // Branch previews on GitHub Pages build under /KyTunes/preview/<branch>/.
+  const base = process.env.KYTUNES_BASE || (pages ? '/KyTunes/' : '/')
+  const preview = base.includes('/preview/')
   return {
-  base: pages ? '/KyTunes/' : '/',
+  base,
   plugins: [
     react(),
     tailwindcss(),
@@ -151,15 +154,15 @@ export default defineConfig(({ mode }) => {
       devOptions: { enabled: true },
       includeAssets: ['apple-touch-icon.png', 'favicon-32.png', 'favicon-16.png'],
       manifest: {
-        name: 'KyTunes',
+        name: preview ? `KyTunes (${base.split('/preview/')[1].replace(/\/$/, '')})` : 'KyTunes',
         short_name: 'KyTunes',
         description: 'Play music saved on this device, or connect a library and keep the songs you play.',
         theme_color: '#6366f1',
         background_color: '#111827',
         display: 'standalone',
-        id: pages ? '/KyTunes/' : '/',
-        start_url: pages ? '/KyTunes/' : '/',
-        scope: pages ? '/KyTunes/' : '/',
+        id: base,
+        start_url: base,
+        scope: base,
         icons: [
           { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
           { src: 'icon-512.png', sizes: '512x512', type: 'image/png' },
@@ -168,7 +171,8 @@ export default defineConfig(({ mode }) => {
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
-        navigateFallbackDenylist: [/^\/api\//],
+        // The main site's service worker also covers /preview/, so keep it from answering for previews.
+        navigateFallbackDenylist: preview ? [/^\/api\//] : [/^\/api\//, /\/preview\//],
         runtimeCaching: [
           {
             urlPattern: /\/demo\/.+\.mp3$/i,
