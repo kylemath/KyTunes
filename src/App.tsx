@@ -876,6 +876,22 @@ function App() {
     saveQueue([]);
   }, []);
 
+  // Play with nothing loaded (from the play bar or the lock screen) starts the
+  // selected song, or the first one in the list, instead of an empty player.
+  const requestPlaying = useCallback((playing: boolean) => {
+    if (!playing || currentSong) {
+      setIsPlaying(playing);
+      return;
+    }
+    const candidates = visibleSongs.filter((song) => !song.offline);
+    const start = selectedSong && !selectedSong.offline
+      ? selectedSong
+      : shuffleOn
+        ? candidates[Math.floor(Math.random() * candidates.length)]
+        : candidates[0];
+    if (start) playSong(start);
+  }, [currentSong, visibleSongs, selectedSong, shuffleOn, playSong]);
+
   const nextSong = useCallback(() => {
     if (!currentSong) return;
     if (shuffleOn) {
@@ -1226,7 +1242,7 @@ function App() {
       <Player
         currentSong={currentSong}
         isPlaying={isPlaying}
-        setIsPlaying={setIsPlaying}
+        setIsPlaying={requestPlaying}
         onNext={nextSong}
         onPrev={prevSong}
         onTrackEnd={nextSong}

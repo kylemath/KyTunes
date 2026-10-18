@@ -727,18 +727,20 @@ export function Player({
       >
         <Repeat1 size={20} />
       </button>
-      <button className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white transition" onClick={onPrev}>
+      <button className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white transition" onClick={onPrev} title="Previous" aria-label="Previous">
         <SkipBack size={24} fill="currentColor" />
       </button>
       <button
         className="w-10 h-10 rounded-full bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition"
         onClick={() => setIsPlaying(!isPlaying)}
+        title={isPlaying ? 'Pause' : 'Play'}
+        aria-label={isPlaying ? 'Pause' : 'Play'}
       >
         {isPlaying
           ? <Pause size={20} fill="currentColor" />
           : <Play  size={20} fill="currentColor" className="ml-1" />}
       </button>
-      <button className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white transition" onClick={onNext}>
+      <button className="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white transition" onClick={onNext} title="Next" aria-label="Next">
         <SkipForward size={24} fill="currentColor" />
       </button>
     </div>
