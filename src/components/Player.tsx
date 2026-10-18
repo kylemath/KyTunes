@@ -50,8 +50,6 @@ interface PlayerProps {
 
 /** Length of the stream-to-local crossfade, in seconds. */
 const HANDOFF_FADE_SECONDS = 2;
-/** Dev check: play a short ding at the middle of the crossfade. Set to false once the fade is confirmed. */
-const HANDOFF_DING = true;
 /** How many times a dropped stream is reloaded before its library is marked offline. */
 const STREAM_RETRIES = 4;
 
@@ -225,20 +223,6 @@ export function Player({
     }
   };
 
-  const playDing = (ctx: AudioContext, at: number) => {
-    const osc = ctx.createOscillator();
-    const env = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = 1320;
-    env.gain.setValueAtTime(0, at);
-    env.gain.linearRampToValueAtTime(0.25, at + 0.01);
-    env.gain.exponentialRampToValueAtTime(0.0001, at + 0.6);
-    osc.connect(env);
-    env.connect(ctx.destination);
-    osc.start(at);
-    osc.stop(at + 0.65);
-  };
-
   // ── Hand off from the stream to the local copy once it has saved ───────────
   useEffect(() => {
     const song = currentSong;
@@ -312,7 +296,6 @@ export function Player({
         toGain.gain.cancelScheduledValues(start);
         fromGain.gain.setValueCurveAtTime(fadeOut, start, HANDOFF_FADE_SECONDS);
         toGain.gain.setValueCurveAtTime(fadeIn, start, HANDOFF_FADE_SECONDS);
-        if (HANDOFF_DING) playDing(ctx, start + HANDOFF_FADE_SECONDS / 2);
 
         // From here the local copy is the one being heard and timed.
         audioRef.current = to;
