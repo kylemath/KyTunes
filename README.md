@@ -4,32 +4,57 @@ A music player for files on your computer. Another computer or a phone runs the 
 
 **[Install KyTunes](https://kylemath.github.io/KyTunes)** — the same player, hosted on GitHub Pages. Open that link and install it from the browser. It starts with the built-in tracks. Add a server from the library menu when you want one.
 
-## Play a folder on this computer
+## Dev server
+
+`npm run dev` runs the player in the browser while you work on it. It does not install the Mac app, and the role it asks for is not used by that app.
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open the address Vite prints and choose **Select music folder**. This uses the file picker in desktop Chrome. On macOS, pointing it at `~/Music` skips GarageBand, Logic, Audio Music Apps, and MainStage. Those are app folders, and GarageBand is often blocked by the system. Other unreadable folders are skipped instead of stopping the scan.
+Before Vite starts, choose one:
 
-`npm run launch`, and the KyTunes Mac app from `npm run create-app`, start the player only. It opens as a slave: join a library, or choose Server on the welcome screen to host on this computer. `npm run library` and `npm run share` still work from a terminal.
+- **client** — this computer plays music from a library hosted somewhere else. Open the address Vite prints and choose **Add a server**.
+- **server** — this computer hosts the music. Open that address, choose **Host on this computer**, then enter the music folder and a password.
 
-## Library server
+The choice is saved for the next `npm run dev`. Run `npm run dev -- --choose` to switch. In the dev player you can also choose **Choose a music folder** to play files on this computer through the browser’s folder picker.
+
+## Mac app
+
+You do not need `npm run dev` to install the app. The install command builds the player and copies the app to `/Applications`. The role is the command you run.
+
+On the computer that only plays:
+
+```bash
+npm install
+npm run install-client
+```
+
+Open **KyTunes** from Applications. It serves the built player. Choose **Add a server** and enter the library address and password.
 
 On the computer that has the music:
+
+```bash
+npm install
+npm run install-server
+```
+
+Open **KyTunes Server** from Applications. The first launch asks for the music folder and a password. After that it serves the player and the music on port 8787.
+
+`npm run library` still starts that same library server from a terminal:
 
 ```bash
 npm run library -- --dir ~/Music --password 'choose-a-password'
 ```
 
-The password is stored only as a hash in `library.config.json`, which is not committed. The process listens on port 8787 and prints where it can be reached. Use that printed address from other devices. Do not put a home address in this repo.
+The password is stored only as a hash in `library.config.json`, which is not committed. Use the address it prints from other devices. Do not put a home address in this repo.
 
 The server sends the song list and the audio. Seeking requests a slice of the file. **Keep** is what saves a whole song on the device you are using.
 
 ## Another computer
 
-Clone this project, run `npm install` and `npm run dev`, then choose **Connect to library server**. Enter the address printed by the library machine, for example `http://<library-computer>:8787`, and the password. That computer plays from its own copy of the app. Only the catalog and the audio cross the network.
+Install the client there with `npm run install-client`, or run `npm run dev` and choose **client**. Then choose **Add a server**, and enter the address from the library machine, for example `http://<library-computer>:8787`, and the password. Only the catalog and the audio cross the network.
 
 ## Phone
 
@@ -37,8 +62,8 @@ There is no app-store install. Open the player in the phone browser, then use **
 
 On the same Wi-Fi, with this project running:
 
-- `npm run dev` prints an address the phone can open. The interface loads from the dev server, and the songs come from the library server.
-- `npm run build` once, then the library server on port 8787 can serve the player page as well as the audio. The phone can open that address without the dev server.
+- With `npm run dev` running, the address Vite prints on the network can be opened on the phone. The interface loads from the dev server, and the songs come from the library.
+- **KyTunes Server**, or `npm run library` after the player has been built, serves the player page and the audio on port 8787. The phone can open that address without the dev server.
 
 A home-screen install that behaves as its own app needs HTTPS. Away from home, install Tailscale on the library machine and the phone, run `tailscale serve 8787`, open that `https://` address, and add it to the home screen. A plain `http://` address on your network still plays in the browser.
 
@@ -62,6 +87,6 @@ If the phone says it can't reach the server, check that Tailscale is on in the p
 
 [https://kylemath.github.io/KyTunes](https://kylemath.github.io/KyTunes) is this app. Chrome and Edge show an install icon. On a phone, use **Add to Home Screen**. The installed window is the player: library 0 is the five public-domain recordings in `public/demo/` (Bach, Mozart, Beethoven, Chopin, and Vivaldi, from Musopen, the European Archive, and the Modena Chamber Orchestra), plus any folder you pick and any song you have already played from a server.
 
-The page is HTTPS. It can connect to an `https://` library, such as Tailscale Serve. A home `http://` address is blocked by the browser. On your own network, run the app locally and connect, as above.
+The page is HTTPS. It can connect to an `https://` library, such as Tailscale Serve. A home `http://` address is blocked by the browser. On your own network, install the client or run `npm run dev` and choose **client**, then add the server.
 
 Pages deploys with GitHub Actions (`npm run build:pages`) when `main` is pushed. That build is the installable app. The library server build stays at `/` and serves the same player with the music.
