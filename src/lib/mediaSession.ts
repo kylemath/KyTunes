@@ -99,24 +99,35 @@ async function artworkFor(song: Song, albumArtworkUrl?: string): Promise<MediaIm
       if (cache.size > 24) cache.delete(cache.keys().next().value as string);
     }
   }
-  if (!src) return [];
+  return src ? imagesFor(src) : [];
+}
+
+function imagesFor(src: string): MediaImage[] {
   const type = src.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
   return [{ src, sizes: `${SIZE}x${SIZE}`, type }];
 }
 
+let metadataRequest = 0;
+
 /** Sets title, artist, album and artwork on the OS media card. */
 export async function setMediaMetadata(song: Song | null, albumArtworkUrl?: string): Promise<void> {
   if (!('mediaSession' in navigator)) return;
+  const request = ++metadataRequest;
   if (!song) {
     navigator.mediaSession.metadata = null;
     return;
   }
   const base = { title: song.title, artist: song.artist, album: song.album };
+  const cached = cache.get(albumArtworkUrl ?? `gen:${song.id}`);
+  if (cached) {
+    navigator.mediaSession.metadata = new MediaMetadata({ ...base, artwork: imagesFor(cached) });
+    return;
+  }
   // Show text immediately, then add artwork once it is ready.
   navigator.mediaSession.metadata = new MediaMetadata(base);
   const artwork = await artworkFor(song, albumArtworkUrl);
-  const current = navigator.mediaSession.metadata;
-  if (current && current.title === base.title && current.artist === base.artist) {
+  // A later call (next song, or this song's album art arriving) wins.
+  if (request === metadataRequest) {
     navigator.mediaSession.metadata = new MediaMetadata({ ...base, artwork });
   }
 }
