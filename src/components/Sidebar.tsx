@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { FilterType, HistoryViewItem, Song } from '../types';
-import { Disc, Library as LibIcon, Search, ListMusic, Plus, History, Sparkles, X, ChevronDown, ChevronRight, ListOrdered, Trash2 } from 'lucide-react';
+import { Disc, HardDrive, Library as LibIcon, Search, ListMusic, Plus, History, Sparkles, X, ChevronDown, ChevronRight, ListOrdered, Trash2 } from 'lucide-react';
 import { buildArtistGroups, buildGroupingPrompt, parseLLMOverrides, getCanonicalArtist, artistGroupKey } from '../lib/artistNorm';
 
 interface PlaylistItem { id: string; name: string; songIds: string[]; }
@@ -133,7 +133,7 @@ export function Sidebar({
     return Array.from(set).sort();
   }, [allAlbumsSorted, albumsCurrentArtistOnly, currentCanonicalArtistKey, songs, artistGroupOverrides]);
 
-  const showArtistAlbumColumns = filterType === 'All' || filterType === 'Artists' || filterType === 'Albums';
+  const showArtistAlbumColumns = filterType === 'All' || filterType === 'Local' || filterType === 'Artists' || filterType === 'Albums';
 
   // Scroll sidebar to current artist/album when browsing columns
   useEffect(() => {
@@ -402,6 +402,7 @@ npm run dev`}</pre>
         {connectError && <p className="px-4 py-1 text-xs text-red-600 dark:text-red-400">{connectError}</p>}
         <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mt-3 mb-2 px-4">Library</div>
         <MenuItem icon={LibIcon} label="All songs" active={filterType === 'All'} onClick={() => { setFilterType('All'); setFilterValue(''); }} />
+        <MenuItem icon={HardDrive} label="Local songs" active={filterType === 'Local'} onClick={() => { setFilterType('Local'); setFilterValue(''); }} />
         <MenuItem icon={ListMusic} label="Playlists" active={filterType === 'Playlist'} onClick={() => { setFilterType('Playlist'); setFilterValue(''); }} />
         <div
           className={`flex items-center gap-3 px-4 py-2 cursor-pointer transition-colors text-sm

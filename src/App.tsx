@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import type { FilterType, HistorySortColumn, HistoryViewItem, PlayHistoryEntry, PlayHistoryState, RepeatMode, Song, SongSortColumn, SortDirection } from './types';
+import type { FilterType, HistorySortColumn, HistoryViewItem, PlayHistoryEntry, PlayHistoryState, RepeatMode, Song, SongLineage, SongSortColumn, SortDirection } from './types';
 import { getDirectoryHandle, saveDirectoryHandle, getSongsCache, saveSongsCache, getPlaylists, savePlaylists, getPlayHistory, savePlayHistory, getArtworkBlob, saveArtworkBlob, getArtistUrl, saveArtistUrl, getArtistGroupOverrides, saveArtistGroupOverrides, getQueue, saveQueue, getPlaybackPreferences, savePlaybackPreferences, getRemoteSession, getRemoteSongsCache, getKeptSongIds, getKeptAudio, saveKeptAudio, deleteKeptAudio, getConnectedLibraries, saveConnectedLibraries, getKeptSongRecords, saveKeptSongRecords } from './db';
 import { getCanonicalArtist, artistGroupKey } from './lib/artistNorm';
 import type { AlbumArtworkResult } from './lib/artwork';
@@ -139,6 +139,8 @@ function App() {
     libraries: [],
   });
   const downloadingRef = useRef(new Set<string>());
+  /** The next song, already downloaded, so moving to it needs no network. */
+  const prefetchRef = useRef<{ songId: string; blob: Blob; lineage: SongLineage | null } | null>(null);
   const publishCatalog = useCallback(() => {
     setSongs(mergeCatalog({
       folderSongs: partsRef.current.folder,
@@ -509,7 +511,8 @@ function App() {
     setKeepBusy(true);
     setLoadingStatus('Saving a copy on this device…');
     try {
-      const downloaded = await downloadRemoteSong(library.session, song.remoteId, (loaded, total) => {
+      const prefetched = prefetchRef.current?.songId === song.id ? prefetchRef.current : null;
+      const downloaded = prefetched ?? await downloadRemoteSong(library.session, song.remoteId, (loaded, total) => {
         if (total > 0) {
           const pct = Math.min(100, Math.round((loaded / total) * 100));
           setLoadingStatus(`Saving a copy on this device… ${pct}%`);
@@ -546,6 +549,7 @@ function App() {
       });
       partsRef.current.kept = [...partsRef.current.kept.filter((item) => item.id !== song.id), record];
       await saveKeptSongRecords(partsRef.current.kept);
+      if (prefetchRef.current?.songId === song.id) prefetchRef.current = null;
       publishCatalog();
       // Leave the stream address alone so the player does not restart the song.
       // It fades over to the local copy instead.
@@ -573,6 +577,8 @@ function App() {
   const resolveAudioUrl = useCallback(async (song: Song) => {
     const kept = await getKeptAudio(song.id);
     if (kept) return { url: URL.createObjectURL(kept), revoke: true };
+    const prefetched = prefetchRef.current;
+    if (prefetched && prefetched.songId === song.id) return { url: URL.createObjectURL(prefetched.blob), revoke: true };
     if (song.fileHandle) {
       const file = await song.fileHandle.getFile();
       return { url: URL.createObjectURL(file), revoke: true };
@@ -664,7 +670,9 @@ function App() {
     if (filterType === 'History') return sortedHistoryItems.map(item => item.song);
     if (filterType === 'Queue') return queueSongs;
     let list = songs;
-    if (filterType === 'Artists' && filterValue) {
+    if (filterType === 'Local') {
+      list = list.filter(s => (s.libraryId ?? LOCAL_LIBRARY_ID) === LOCAL_LIBRARY_ID);
+    } else if (filterType === 'Artists' && filterValue) {
       // Match by canonical name so "Kid Cudi feat. X" rows still show when
       // the user has selected "Kid Cudi" from the grouped sidebar list.
       const targetKey = artistGroupKey(filterValue);
@@ -712,6 +720,16 @@ function App() {
         c = a.album.toLowerCase().localeCompare(b.album.toLowerCase());
         if (c !== 0) return c;
         c = a.artist.toLowerCase().localeCompare(b.artist.toLowerCase());
+        if (c !== 0) return c;
+        return a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+      }
+      if (sortColumn === 'library') {
+        // Group by library, then keep each library in album order.
+        let c = (Number(a.libraryId ?? 0) || 0) - (Number(b.libraryId ?? 0) || 0);
+        if (c !== 0) return sortDirection === 'asc' ? c : -c;
+        c = a.album.toLowerCase().localeCompare(b.album.toLowerCase());
+        if (c !== 0) return c;
+        c = (a.trackNumber ?? 1_000_000) - (b.trackNumber ?? 1_000_000);
         if (c !== 0) return c;
         return a.title.toLowerCase().localeCompare(b.title.toLowerCase());
       }
@@ -913,6 +931,84 @@ function App() {
       playSong(playableContext[playableContext.length - 1], { source: 'advance' });
     }
   }, [currentSong, shuffleOn, ensureShuffleCycle, playSongById, repeatMode, playableContext, playSong]);
+
+  /**
+   * The song after `fromId` that can play now, in list or shuffle order, skipping
+   * offline songs. `wrap` goes round to the start of the list. Null when nothing can.
+   */
+  const findUpcoming = useCallback((fromId: string, wrap: boolean): Song | null => {
+    const after = <T,>(list: T[], index: number) => (wrap
+      ? [...list.slice(index + 1), ...list.slice(0, Math.max(0, index))]
+      : list.slice(index + 1));
+    if (shuffleOn) {
+      const order = ensureShuffleCycle(fromId);
+      for (const id of after(order, order.indexOf(fromId))) {
+        const song = songMap.get(id);
+        if (song && !song.offline && song.id !== fromId) return song;
+      }
+      return null;
+    }
+    const index = contextSongs.findIndex((song) => song.id === fromId);
+    return after(contextSongs, index).find((song) => !song.offline && song.id !== fromId) ?? null;
+  }, [shuffleOn, ensureShuffleCycle, songMap, contextSongs]);
+
+  // ── Keep playing when a library drops ──────────────────────────────────────
+  const [streamFailure, setStreamFailure] = useState<{ songId: string; at: number } | null>(null);
+  const handleLibraryUnavailable = useCallback((libraryId: string) => {
+    markLibraryUnreachable(libraryId);
+    if (currentSong) setStreamFailure({ songId: currentSong.id, at: Date.now() });
+  }, [markLibraryUnreachable, currentSong]);
+
+  useEffect(() => {
+    if (!streamFailure || !currentSong || streamFailure.songId !== currentSong.id) return;
+    setStreamFailure(null);
+    // Runs after the library is marked offline, so its songs are skipped here.
+    const next = findUpcoming(currentSong.id, true);
+    if (next) {
+      playSong(next, { source: 'advance' });
+      return;
+    }
+    // Nothing left in this list can play: carry on with the songs on this device.
+    const local = songs.filter((song) => (song.libraryId ?? LOCAL_LIBRARY_ID) === LOCAL_LIBRARY_ID && song.id !== currentSong.id);
+    if (local.length === 0) {
+      setIsPlaying(false);
+      return;
+    }
+    const ids = local.map((song) => song.id);
+    const first = shuffleOn ? local[Math.floor(Math.random() * local.length)] : local[0];
+    setPlayContext(ids);
+    if (shuffleOn) syncShuffleCycle(local, ids.join('|'), { anchorSongId: first.id });
+    setLoadingStatus('Library unreachable. Playing songs on this device.');
+    window.setTimeout(() => setLoadingStatus((status) => status === 'Library unreachable. Playing songs on this device.' ? '' : status), 8000);
+    playSong(first, { source: 'advance' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamFailure]);
+
+  // ── Download the next song while this one plays ────────────────────────────
+  useEffect(() => {
+    if (!currentSong) return;
+    const next = findUpcoming(currentSong.id, repeatMode === 'context');
+    if (!next?.remoteId || !next.libraryId || next.libraryId === LOCAL_LIBRARY_ID) return;
+    if (prefetchRef.current?.songId === next.id || partsRef.current.kept.some((record) => record.id === next.id)) return;
+    const library = partsRef.current.libraries.find((item) => item.id === next.libraryId);
+    if (!library) return;
+    const remoteId = next.remoteId;
+    const controller = new AbortController();
+    // Let the current song get going first.
+    const timer = window.setTimeout(async () => {
+      try {
+        const downloaded = await downloadRemoteSong(library.session, remoteId, undefined, controller.signal);
+        if (!controller.signal.aborted) prefetchRef.current = { songId: next.id, ...downloaded };
+      } catch {
+        // It streams as usual when its turn comes.
+      }
+    }, 5000);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSong?.id, playbackContextKey, shuffleOn, repeatMode]);
 
   const setPlaylists = useCallback((next: (prev: typeof playlists) => typeof playlists) => {
     setPlaylistsState(prev => {
@@ -1160,7 +1256,7 @@ function App() {
         keepState={currentSong?.remoteId ? (keepBusy ? 'saving' : keptIds.has(currentSong.id) ? 'kept' : 'available') : undefined}
         onToggleKeep={() => { void toggleKeep(); }}
         resolveAudioUrl={resolveAudioUrl}
-        onLibraryUnavailable={markLibraryUnreachable}
+        onLibraryUnavailable={handleLibraryUnavailable}
         localReady={localReady && localReady.songId === currentSong?.id ? localReady : null}
         transportSlot={narrow ? transportSlot : null}
       />

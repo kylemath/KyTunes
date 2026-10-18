@@ -100,7 +100,7 @@ export interface HistoryViewItem {
   stats?: SongPlayStats;
 }
 
-export type FilterType = 'All' | 'Artists' | 'Albums' | 'Playlist' | 'Queue' | 'History';
+export type FilterType = 'All' | 'Local' | 'Artists' | 'Albums' | 'Playlist' | 'Queue' | 'History';
 export type RepeatMode = 'off' | 'one' | 'context';
 
 export interface PlaybackPreferences {
@@ -117,7 +117,7 @@ export interface LibraryState {
   error: string | null;
 }
 
-export type SongSortColumn = 'title' | 'artist' | 'album' | 'duration' | 'genre' | 'trackNumber';
+export type SongSortColumn = 'library' | 'title' | 'artist' | 'album' | 'duration' | 'genre' | 'trackNumber';
 export type HistorySortColumn = 'title' | 'artist' | 'album' | 'playedAt' | 'listenedSeconds' | 'playCount';
 export type SortColumn = SongSortColumn | HistorySortColumn;
 export type SortDirection = 'asc' | 'desc';

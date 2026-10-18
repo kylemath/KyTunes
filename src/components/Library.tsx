@@ -72,7 +72,7 @@ function SongRow(props: { ariaAttributes: { "aria-posinset": number; "aria-setsi
       onDoubleClick={() => onPlay(song)}
     >
       <div className="w-8 flex-shrink-0 text-gray-400 text-xs">{index + 1}</div>
-      <div className="w-6 flex-shrink-0 text-xs tabular-nums text-gray-400" title={song.libraryId === '0' ? 'On this device' : `Library ${song.libraryId ?? '0'}`}>
+      <div className="w-10 flex-shrink-0 text-xs tabular-nums text-gray-400" title={song.libraryId === '0' ? 'On this device' : `Library ${song.libraryId ?? '0'}`}>
         {song.libraryId ?? '0'}
       </div>
       <div className={`flex-1 pr-4 truncate font-medium ${compact ? 'min-w-0' : 'min-w-[150px]'}`}>
@@ -240,7 +240,9 @@ export function Library({
         <div className="flex items-center px-4 py-2 border-b border-gray-200 dark:border-gray-800 text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider bg-gray-50 dark:bg-[#1a1a1a] shrink-0">
           <div className="w-8 flex-shrink-0"></div>
           {!isHistoryMode && (
-            <div className="w-6 flex-shrink-0" title="0 is on this device. Any other number is a connected library.">Lib</div>
+            <div className="w-10 flex-shrink-0" title="0 is on this device. Any other number is a connected library.">
+              <SortHeader label="Lib" column="library" currentColumn={sortColumn} direction={sortDirection} onSort={onSort} />
+            </div>
           )}
           {isHistoryMode ? (
             <>
