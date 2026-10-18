@@ -153,11 +153,11 @@ export function LibraryConnect({
             <label className="flex flex-col gap-1 text-sm">
               <span className="text-gray-600 dark:text-gray-300">Library server</span>
               <input
-                type="url"
+                type="text"
                 inputMode="url"
                 autoCapitalize="none"
                 autoCorrect="off"
-                placeholder="https://your-library.example"
+                placeholder="https://your-mac.tailnet.ts.net"
                 value={serverUrl}
                 onChange={(event) => setServerUrl(event.target.value)}
                 className="px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900"

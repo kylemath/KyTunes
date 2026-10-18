@@ -44,6 +44,20 @@ A home-screen install that behaves as its own app needs HTTPS. Away from home, i
 
 Android Chrome cannot browse an arbitrary music folder. The phone streams, and **Keep** stores the songs you want on the device.
 
+## Android phone over Tailscale
+
+This works away from home, on mobile data or another Wi-Fi.
+
+1. On the library computer, start the server with `npm run library -- --dir ~/Music --password '…'` and leave it running.
+2. In a second terminal, run `npm run share`. It prints a QR code and an address like `https://your-mac.your-tailnet.ts.net/`, then runs `tailscale serve 8787` until you press Ctrl+C. The first time, Tailscale may ask you to turn on HTTPS for the tailnet in its admin console.
+3. On the phone, install the Tailscale app from the Play Store, sign in to the same tailnet, and switch it on.
+4. Open that `https://` address in Chrome (scan the QR code, or type it). Use it without `:8787`; Tailscale Serve answers on the normal HTTPS port and passes requests to 8787 on the computer.
+5. Enter the password, then use **Add to Home Screen** (or **Install app**) from Chrome's menu.
+
+You can also open [the GitHub Pages app](https://kylemath.github.io/KyTunes) on the phone and add the same `https://…ts.net` address from **Add a server** in the library menu. Typing just the host name is fine; a `.ts.net` name gets `https://` added. An `http://` address, including `http://100.x.y.z:8787`, is refused there because the browser blocks plain HTTP from an HTTPS page.
+
+If the phone says it can't reach the server, check that Tailscale is on in the phone's app and that `npm run share` is still running on the computer.
+
 ## Installed from GitHub Pages
 
 [https://kylemath.github.io/KyTunes](https://kylemath.github.io/KyTunes) is this app. Chrome and Edge show an install icon. On a phone, use **Add to Home Screen**. The installed window is the player: library 0 is the five public-domain recordings in `public/demo/` (Bach, Mozart, Beethoven, Chopin, and Vivaldi, from Musopen, the European Archive, and the Modena Chamber Orchestra), plus any folder you pick and any song you have already played from a server.

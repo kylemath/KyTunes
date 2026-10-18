@@ -326,10 +326,13 @@ npm run dev`}</pre>
             }}
           >
             <input
-              type="url"
+              type="text"
+              inputMode="url"
+              autoCapitalize="none"
+              autoCorrect="off"
               value={serverUrl}
               onChange={(event) => setServerUrl(event.target.value)}
-              placeholder="http://library:8787"
+              placeholder="https://your-mac.tailnet.ts.net"
               required
               className="px-2 py-1 text-sm border border-gray-200 dark:border-gray-600 rounded bg-white dark:bg-gray-800"
             />

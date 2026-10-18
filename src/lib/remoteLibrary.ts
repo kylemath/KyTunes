@@ -28,15 +28,53 @@ function apiUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/$/, '')}${path}`;
 }
 
-export function normalizeServerUrl(input: string): string {
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+function isTailnetHost(hostname: string): boolean {
+  return hostname.endsWith('.ts.net');
+}
+
+/**
+ * Turns what someone typed into a server origin. A bare host gets https:// when the
+ * page itself is HTTPS or the host is a Tailscale name, and http:// otherwise.
+ */
+export function normalizeServerUrl(input: string, pageProtocol = window.location.protocol): string {
   const trimmed = input.trim();
   if (!trimmed) return '';
+  let url: URL;
   try {
-    const withProto = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-    return new URL(withProto).origin;
+    if (/^https?:\/\//i.test(trimmed)) {
+      url = new URL(trimmed);
+    } else {
+      const guess = new URL(`http://${trimmed}`);
+      const secure = pageProtocol === 'https:' || isTailnetHost(guess.hostname);
+      url = new URL(`${secure ? 'https' : 'http'}://${trimmed}`);
+    }
   } catch {
     throw new Error('Enter the library server address, including http:// or https://');
   }
+  // Browsers block http:// requests from an https:// page, except to this computer.
+  if (pageProtocol === 'https:' && url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+    throw new Error('This page is HTTPS, so the browser blocks http:// servers. Use the library\'s https:// Tailscale address (run npm run share on the library computer).');
+  }
+  return url.origin;
+}
+
+function unreachableMessage(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl);
+    if (url.protocol === 'https:' && isTailnetHost(url.hostname) && url.port) {
+      return `Could not reach that server. Tailscale Serve answers at https://${url.hostname} without :${url.port}.`;
+    }
+    if (isTailnetHost(url.hostname)) {
+      return 'Could not reach that server. Check that Tailscale is connected on this device and that npm run share is running on the library computer.';
+    }
+  } catch {
+    // same-origin library
+  }
+  return 'Could not reach that server.';
 }
 
 export async function probeLibrary(session: RemoteSession): Promise<boolean> {
@@ -70,7 +108,7 @@ export async function loginRemote(baseUrl: string, password: string): Promise<Re
       body: JSON.stringify({ password }),
     });
   } catch {
-    throw new Error('Could not reach that server.');
+    throw new Error(unreachableMessage(baseUrl));
   }
   const data = await res.json().catch(() => ({})) as { error?: string; token?: string; expiresAt?: number };
   if (!res.ok || !data.token || !data.expiresAt) {
