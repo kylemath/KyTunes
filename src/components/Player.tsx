@@ -992,7 +992,16 @@ export function Player({
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
           onEnded={handleTrackEnded}
-          onPlaying={(e) => { if (isActive(e)) retryRef.current.count = 0; }}
+          onPlaying={(e) => {
+            if (!isActive(e)) return;
+            retryRef.current.count = 0;
+            // Android rebuilds the lock screen card when a new track starts
+            // playing. The song changes while nothing is playing (after the
+            // last one ended), so send the card the current song again now.
+            void setMediaMetadata(currentSong, albumArtworkUrl);
+            if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+            setMediaPosition(e.currentTarget.currentTime, e.currentTarget.duration);
+          }}
           onError={(e) => {
             if (!isActive(e) || !e.currentTarget.getAttribute('src')) return;
             retryStream('dropped');

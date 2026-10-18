@@ -78,7 +78,9 @@ function generatedArtwork(song: Song): string | null {
   ctx.textBaseline = 'middle';
   ctx.fillText('♫', SIZE / 2, SIZE / 2 + 8);
 
-  return canvas.toDataURL('image/png');
+  // JPEG keeps the cover around 50 KB; a PNG of the gradient is ~450 KB, which
+  // is a lot to hand the OS on every track change.
+  return canvas.toDataURL('image/jpeg', 0.9);
 }
 
 async function artworkFor(song: Song, albumArtworkUrl?: string): Promise<MediaImage[]> {
