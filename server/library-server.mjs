@@ -562,7 +562,13 @@ async function ingestSong(config, { sourceAddress, songId, prior, bytes }) {
 }
 
 function clientIp(req) {
-  return req.socket.remoteAddress || 'unknown';
+  const ip = req.socket.remoteAddress || 'unknown';
+  // Tailscale Serve proxies from loopback, so every phone would share one rate limit.
+  if (ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1') {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    if (forwarded) return forwarded;
+  }
+  return ip;
 }
 
 function tooManyLogins(ip) {
