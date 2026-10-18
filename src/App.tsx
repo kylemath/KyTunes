@@ -92,7 +92,7 @@ function App() {
     return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
   }, [searchQuery]);
 
-  const [sortColumn, setSortColumn] = useState<SongSortColumn>('trackNumber');
+  const [sortColumn, setSortColumn] = useState<SongSortColumn>('artist');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [historySortColumn, setHistorySortColumn] = useState<HistorySortColumn>('playedAt');
   const [historySortDirection, setHistorySortDirection] = useState<SortDirection>('desc');
@@ -726,6 +726,16 @@ function App() {
       if (sortColumn === 'library') {
         // Group by library, then keep each library in album order.
         let c = (Number(a.libraryId ?? 0) || 0) - (Number(b.libraryId ?? 0) || 0);
+        if (c !== 0) return sortDirection === 'asc' ? c : -c;
+        c = a.album.toLowerCase().localeCompare(b.album.toLowerCase());
+        if (c !== 0) return c;
+        c = (a.trackNumber ?? 1_000_000) - (b.trackNumber ?? 1_000_000);
+        if (c !== 0) return c;
+        return a.title.toLowerCase().localeCompare(b.title.toLowerCase());
+      }
+      if (sortColumn === 'artist') {
+        // Group by artist, then keep each artist's albums in track order.
+        let c = a.artist.toLowerCase().localeCompare(b.artist.toLowerCase());
         if (c !== 0) return sortDirection === 'asc' ? c : -c;
         c = a.album.toLowerCase().localeCompare(b.album.toLowerCase());
         if (c !== 0) return c;
