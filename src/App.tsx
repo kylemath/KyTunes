@@ -5,7 +5,7 @@ import { getCanonicalArtist, artistGroupKey } from './lib/artistNorm';
 import type { AlbumArtworkResult } from './lib/artwork';
 import { searchArtistImage, searchAlbumArtwork } from './lib/artwork';
 import { collectFiles, parseMetadataInBackground } from './lib/scanner';
-import { castStreamUrlFor, downloadRemoteSong, fetchRemoteLibrary, loginRemote, normalizeServerUrl, probeLibrary, requestRemoteRescan, RemoteAuthError } from './lib/remoteLibrary';
+import { castStreamUrlsFor, downloadRemoteSong, fetchRemoteLibrary, loginRemote, normalizeServerUrl, probeLibrary, requestRemoteRescan, RemoteAuthError } from './lib/remoteLibrary';
 import { depositIncoming, ensureFolderChain, lineageForSong, rememberedLineage } from './lib/deposit';
 import { libraryName, LOCAL_LIBRARY_ID, mergeCatalog, nextLibraryId, plainKeptRecord, playerSongId, type ConnectedLibrary, type KeptSongRecord } from './lib/catalog';
 import { Player } from './components/Player';
@@ -587,17 +587,17 @@ function App() {
     throw new Error('No audio for this song');
   }, []);
 
-  /** A URL the Chromecast can fetch itself, or null for a song only this device has. */
-  const resolveCastUrl = useCallback(async (song: Song) => {
-    if (song.fileHandle) return null;
+  /** URLs the Chromecast could fetch itself, best first. Empty for a song only this device has. */
+  const resolveCastUrls = useCallback(async (song: Song): Promise<string[]> => {
+    if (song.fileHandle) return [];
     const libraryId = song.source === 'remote' ? song.libraryId : song.originLibraryId;
     const library = libraryId && libraryId !== LOCAL_LIBRARY_ID
       ? partsRef.current.libraries.find((item) => item.id === libraryId)
       : undefined;
-    if (library && song.remoteId) return castStreamUrlFor(library.session, song.remoteId);
+    if (library && song.remoteId) return castStreamUrlsFor(library.session, song.remoteId);
     // The built-in tracks are plain files next to the player.
-    if (song.streamUrl) return new URL(song.streamUrl, window.location.href).toString();
-    return null;
+    if (song.streamUrl) return [new URL(song.streamUrl, window.location.href).toString()];
+    return [];
   }, []);
 
   const toggleKeep = useCallback(async () => {
@@ -1295,7 +1295,7 @@ function App() {
         keepState={currentSong?.remoteId ? (keepBusy ? 'saving' : keptIds.has(currentSong.id) ? 'kept' : 'available') : undefined}
         onToggleKeep={() => { void toggleKeep(); }}
         resolveAudioUrl={resolveAudioUrl}
-        resolveCastUrl={resolveCastUrl}
+        resolveCastUrls={resolveCastUrls}
         onLibraryUnavailable={handleLibraryUnavailable}
         localReady={localReady && localReady.songId === currentSong?.id ? localReady : null}
         transportSlot={narrow ? transportSlot : null}

@@ -43,8 +43,8 @@ interface PlayerProps {
   keepState?: 'available' | 'kept' | 'saving';
   onToggleKeep?: () => void;
   resolveAudioUrl?: (song: Song) => Promise<{ url: string; revoke: boolean }>;
-  /** A URL a Chromecast can fetch for this song, or null when only this device has it. */
-  resolveCastUrl?: (song: Song) => Promise<string | null>;
+  /** URLs a Chromecast could fetch for this song, best first. Empty when only this device has it. */
+  resolveCastUrls?: (song: Song) => Promise<string[]>;
   onLibraryUnavailable?: (libraryId: string) => void;
   /** Set when the current song's local copy has finished saving. The player fades from the stream to it. */
   localReady?: { songId: string; at: number } | null;
@@ -107,7 +107,7 @@ export function Player({
   keepState,
   onToggleKeep,
   resolveAudioUrl,
-  resolveCastUrl,
+  resolveCastUrls,
   onLibraryUnavailable,
   localReady,
   transportSlot,
@@ -615,33 +615,40 @@ export function Player({
 
   const loadOnCast = useCallback(async (song: Song, startAt: number, autoplay = isPlayingRef.current) => {
     castSongRef.current = song.id;
-    if (!resolveCastUrl) return;
-    const url = await resolveCastUrl(song);
+    if (!resolveCastUrls) return;
+    const urls = await resolveCastUrls(song);
     if (castSongRef.current !== song.id || !castingRef.current) return;
-    if (!url) {
+    if (urls.length === 0) {
       setCastNote('Only on this device, so it can\'t play on the Chromecast');
       return;
     }
-    let host = '';
-    try { host = new URL(url).host; } catch { /* shown without a host */ }
     setCastNote(`Sending to ${cast.deviceName || 'the Chromecast'}…`);
-    try {
-      await castLoad({
-        url,
-        contentType: contentTypeFor(song.remoteId || song.id),
-        title: song.title,
-        artist: song.artist,
-        album: song.album,
-        artworkUrl: albumArtworkUrl,
-        startAt,
-        autoplay,
-      });
-      if (castSongRef.current === song.id) setCastNote('');
-    } catch (error) {
-      console.warn('Chromecast load failed:', url, error);
-      if (castSongRef.current === song.id) setCastNote(`Chromecast couldn't play it from ${host} (${castErrorText(error)})`);
+    // Try each address until the Chromecast can fetch one.
+    const failures: string[] = [];
+    for (const url of urls) {
+      let host = url;
+      try { host = new URL(url).host; } catch { /* shown as is */ }
+      try {
+        await castLoad({
+          url,
+          contentType: contentTypeFor(song.remoteId || song.id),
+          title: song.title,
+          artist: song.artist,
+          album: song.album,
+          artworkUrl: albumArtworkUrl,
+          startAt,
+          autoplay,
+        });
+        if (castSongRef.current === song.id) setCastNote('');
+        return;
+      } catch (error) {
+        console.warn('Chromecast load failed:', url, error);
+        failures.push(`${host} (${castErrorText(error)})`);
+      }
+      if (castSongRef.current !== song.id || !castingRef.current) return;
     }
-  }, [resolveCastUrl, albumArtworkUrl, cast.deviceName]);
+    if (castSongRef.current === song.id) setCastNote(`Chromecast couldn't play it from ${failures.join(', ')}`);
+  }, [resolveCastUrls, albumArtworkUrl, cast.deviceName]);
 
   // ── Session reporting ──────────────────────────────────────────────────────
   const reportActiveSession = useCallback((listenedSeconds?: number) => {

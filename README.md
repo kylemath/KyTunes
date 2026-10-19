@@ -90,3 +90,12 @@ If the phone says it can't reach the server, check that Tailscale is on in the p
 The page is HTTPS. It can connect to an `https://` library, such as Tailscale Serve. A home `http://` address is blocked by the browser. On your own network, install the client or run `npm run dev` and choose **client**, then add the server.
 
 Pages deploys with GitHub Actions (`npm run build:pages`) when `main` is pushed. That build is the installable app. The library server build stays at `/` and serves the same player with the music.
+
+## Chromecast
+
+In Chrome on a computer or an Android phone, a Cast icon shows next to the share button when a Chromecast is on the network. The Chromecast downloads each song from the library itself, so the phone or computer is only the remote. Songs from a folder picked on the device can't be cast.
+
+The app gives the Chromecast the library's addresses in this order, and uses the first one it can play:
+
+1. The library's `https://` address. A Chromecast can't use Tailscale, so a `.ts.net` address works only with Funnel on: run `tailscale funnel 8787` on the library computer. That makes the library reachable from the internet, still behind its password.
+2. The library computer's home-network addresses (`http://192.168…:8787`). Some Chromecasts refuse plain `http://` audio, so Funnel is the dependable choice.

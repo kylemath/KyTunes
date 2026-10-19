@@ -158,10 +158,13 @@ export function streamUrlFor(session: RemoteSession, songId: string): string {
 }
 
 /**
- * Stream URL for a Chromecast. It cannot use a Tailscale name, so the library is asked
- * for its home-network address. Older servers without that answer get the usual address.
+ * Stream URLs for a Chromecast to try, best first. An https address comes first: newer
+ * Chromecasts refuse plain http audio, and a Tailscale name works for them once Funnel
+ * makes it public. Then the library's home-network addresses, which it reports itself.
  */
-export async function castStreamUrlFor(session: RemoteSession, songId: string): Promise<string> {
+export async function castStreamUrlsFor(session: RemoteSession, songId: string): Promise<string[]> {
+  const own = streamUrlFor(session, songId);
+  const urls = own.startsWith('https:') ? [own] : [];
   try {
     const res = await fetch(apiUrl(session.baseUrl, '/api/cast-address'), {
       headers: { Authorization: `Bearer ${session.token}` },
@@ -169,13 +172,13 @@ export async function castStreamUrlFor(session: RemoteSession, songId: string): 
     });
     if (res.ok) {
       const data = await res.json() as { urls?: string[] };
-      const lan = data.urls?.[0];
-      if (lan) return streamUrlFor({ ...session, baseUrl: lan }, songId);
+      for (const lan of data.urls ?? []) urls.push(streamUrlFor({ ...session, baseUrl: lan }, songId));
     }
   } catch {
-    // Fall through to the address this device uses.
+    // An older server without the address list.
   }
-  return streamUrlFor(session, songId);
+  if (!urls.includes(own)) urls.push(own);
+  return urls;
 }
 
 export function attachRemote(session: RemoteSession, songs: Song[]): Song[] {
