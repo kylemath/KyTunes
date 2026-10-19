@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import { PhoneShare } from './PhoneShare';
 import { CastButton } from './CastButton';
 import { setMediaActionHandler, setMediaMetadata, setMediaPosition } from '../lib/mediaSession';
-import { castLoad, castSeek, castSetPlaying, contentTypeFor, onCastEnded, startCast, useCast } from '../lib/cast';
+import { castErrorText, castLoad, castSeek, castSetPlaying, contentTypeFor, onCastEnded, startCast, useCast } from '../lib/cast';
 
 interface PlaylistItem {
   id: string;
@@ -537,8 +537,11 @@ export function Player({
     audioARef.current?.pause();
     audioBRef.current?.pause();
     if (!currentSong || castSongRef.current === currentSong.id) return;
-    // A new song starts at 0. The first song carries on from where this device was.
-    void loadOnCast(currentSong, currentTimeRef.current);
+    // A new song starts at 0. The first song carries on from where this device was, and plays:
+    // choosing a Chromecast means wanting to hear it there.
+    const first = castSongRef.current === null;
+    if (first && !isPlayingRef.current) setIsPlaying(true);
+    void loadOnCast(currentSong, currentTimeRef.current, first ? true : isPlayingRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cast.connected, currentSong?.id]);
 
@@ -610,7 +613,7 @@ export function Player({
     setMuted(false);
   };
 
-  const loadOnCast = useCallback(async (song: Song, startAt: number) => {
+  const loadOnCast = useCallback(async (song: Song, startAt: number, autoplay = isPlayingRef.current) => {
     castSongRef.current = song.id;
     if (!resolveCastUrl) return;
     const url = await resolveCastUrl(song);
@@ -619,7 +622,9 @@ export function Player({
       setCastNote('Only on this device, so it can\'t play on the Chromecast');
       return;
     }
-    setCastNote('');
+    let host = '';
+    try { host = new URL(url).host; } catch { /* shown without a host */ }
+    setCastNote(`Sending to ${cast.deviceName || 'the Chromecast'}…`);
     try {
       await castLoad({
         url,
@@ -629,13 +634,14 @@ export function Player({
         album: song.album,
         artworkUrl: albumArtworkUrl,
         startAt,
-        autoplay: isPlayingRef.current,
+        autoplay,
       });
+      if (castSongRef.current === song.id) setCastNote('');
     } catch (error) {
-      console.warn('Chromecast load failed:', error);
-      if (castSongRef.current === song.id) setCastNote('The Chromecast could not play this song');
+      console.warn('Chromecast load failed:', url, error);
+      if (castSongRef.current === song.id) setCastNote(`Chromecast couldn't play it from ${host} (${castErrorText(error)})`);
     }
-  }, [resolveCastUrl, albumArtworkUrl]);
+  }, [resolveCastUrl, albumArtworkUrl, cast.deviceName]);
 
   // ── Session reporting ──────────────────────────────────────────────────────
   const reportActiveSession = useCallback((listenedSeconds?: number) => {
@@ -882,18 +888,22 @@ export function Player({
               {/* Title + artist/album text */}
               <div className="flex-1 min-w-0 flex flex-col justify-center pr-14">
                 <div className="font-medium text-sm truncate">{currentSong.title}</div>
+                {cast.connected && castNote ? (
+                  <div className="text-xs text-amber-600 dark:text-amber-400 truncate" title={castNote}>{castNote}</div>
+                ) : (
                 <div className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 truncate">
                   <button type="button" className="truncate max-w-[45%] hover:text-blue-600 dark:hover:text-blue-400 transition-colors" onClick={() => onArtistClick?.(currentSong.artist)}>{currentSong.artist}</button>
                   <span className="shrink-0">-</span>
                   <button type="button" className="truncate max-w-[45%] hover:text-blue-600 dark:hover:text-blue-400 transition-colors" onClick={() => onAlbumClick?.(currentSong.album)}>{currentSong.album}</button>
                 </div>
+                )}
               </div>
 
               <div className="absolute bottom-1 left-14 text-[10px] text-gray-500">{fmt(currentTime)}</div>
               <div className="absolute bottom-1 right-4 text-[10px] text-gray-500">-{fmt(duration - currentTime)}</div>
               {cast.connected && (
-                <div className={`absolute bottom-1 left-1/2 -translate-x-1/2 max-w-[50%] truncate text-[10px] ${castNote ? 'text-amber-600 dark:text-amber-400' : 'text-blue-600 dark:text-blue-400'}`}>
-                  {castNote || `On ${cast.deviceName || 'Chromecast'}`}
+                <div className="absolute bottom-1 left-1/2 -translate-x-1/2 max-w-[50%] truncate text-[10px] text-blue-600 dark:text-blue-400">
+                  On {cast.deviceName || 'Chromecast'}
                 </div>
               )}
 

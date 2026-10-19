@@ -36,7 +36,7 @@ interface RemotePlayerControllerLike {
 }
 interface CastFramework {
   CastContext: { getInstance(): CastContextLike };
-  CastContextEventType: { CAST_STATE_CHANGED: string };
+  CastContextEventType: { CAST_STATE_CHANGED: string; SESSION_STATE_CHANGED: string };
   RemotePlayer: new () => RemotePlayerLike;
   RemotePlayerController: new (player: RemotePlayerLike) => RemotePlayerControllerLike;
   RemotePlayerEventType: { ANY_CHANGE: string };
@@ -108,14 +108,24 @@ function setup() {
     update({
       available: castState !== 'NO_DEVICES_AVAILABLE',
       connecting: castState === 'CONNECTING',
-      connected: castState === 'CONNECTED',
-      deviceName: castState === 'CONNECTED' ? context?.getCurrentSession()?.getCastDevice().friendlyName ?? '' : '',
     });
   };
   context.addEventListener(framework.CastContextEventType.CAST_STATE_CHANGED, (event) => {
     if (event.castState) readCastState(event.castState);
   });
   readCastState(context.getCastState());
+  // "Connected" waits for the session itself, so a song can be loaded onto it straight away.
+  const readSession = () => {
+    const session = context?.getCurrentSession() ?? null;
+    update({ connected: Boolean(session), deviceName: session?.getCastDevice().friendlyName ?? '' });
+  };
+  context.addEventListener(framework.CastContextEventType.SESSION_STATE_CHANGED, (event) => {
+    if (event.sessionState === 'SESSION_STARTED' || event.sessionState === 'SESSION_RESUMED') readSession();
+    if (event.sessionState === 'SESSION_ENDED' || event.sessionState === 'SESSION_START_FAILED') {
+      update({ connected: false, deviceName: '' });
+    }
+  });
+  readSession();
 
   player = new framework.RemotePlayer();
   controller = new framework.RemotePlayerController(player);
@@ -210,7 +220,7 @@ export async function castLoad(input: {
 }) {
   const chromeCast = window.chrome?.cast;
   const session = context?.getCurrentSession();
-  if (!chromeCast || !session) return;
+  if (!chromeCast || !session) throw new Error('no Chromecast session');
   const media = new chromeCast.media.MediaInfo(input.url, input.contentType);
   media.streamType = chromeCast.media.StreamType.BUFFERED;
   const metadata = new chromeCast.media.MusicTrackMediaMetadata();
@@ -224,7 +234,18 @@ export async function castLoad(input: {
   request.currentTime = input.startAt;
   request.autoplay = input.autoplay;
   update({ currentTime: input.startAt, paused: !input.autoplay });
-  await session.loadMedia(request);
+  // Resolves with an error code on some versions of the library, and rejects with one on others.
+  const result = await session.loadMedia(request);
+  if (result) throw new Error(String((result as { code?: string }).code ?? result));
+}
+
+/** Readable text for an error from the Cast library, which is often a bare code. */
+export function castErrorText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  const code = (error as { code?: string; description?: string } | null)?.code;
+  const description = (error as { description?: string } | null)?.description;
+  return [code, description].filter(Boolean).join(': ') || 'unknown error';
 }
 
 export function castSetPlaying(playing: boolean) {
