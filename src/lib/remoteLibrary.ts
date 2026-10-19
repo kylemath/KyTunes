@@ -157,6 +157,27 @@ export function streamUrlFor(session: RemoteSession, songId: string): string {
   return url.toString();
 }
 
+/**
+ * Stream URL for a Chromecast. It cannot use a Tailscale name, so the library is asked
+ * for its home-network address. Older servers without that answer get the usual address.
+ */
+export async function castStreamUrlFor(session: RemoteSession, songId: string): Promise<string> {
+  try {
+    const res = await fetch(apiUrl(session.baseUrl, '/api/cast-address'), {
+      headers: { Authorization: `Bearer ${session.token}` },
+      signal: AbortSignal.timeout(2500),
+    });
+    if (res.ok) {
+      const data = await res.json() as { urls?: string[] };
+      const lan = data.urls?.[0];
+      if (lan) return streamUrlFor({ ...session, baseUrl: lan }, songId);
+    }
+  } catch {
+    // Fall through to the address this device uses.
+  }
+  return streamUrlFor(session, songId);
+}
+
 export function attachRemote(session: RemoteSession, songs: Song[]): Song[] {
   return songs.map((song) => ({
     ...song,

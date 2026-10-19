@@ -757,6 +757,16 @@ function lanUrls(port) {
   return urls;
 }
 
+function isPrivateLan(address) {
+  const [a, b] = address.split('.').map(Number);
+  return a === 10 || a === 192 && b === 168 || a === 172 && b >= 16 && b <= 31;
+}
+
+/** Home-network addresses a Chromecast can reach. Tailscale (100.64.0.0/10) is left out. */
+function castUrls(port) {
+  return lanUrls(port).filter((url) => isPrivateLan(new URL(url).hostname));
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -814,6 +824,14 @@ async function main() {
           return;
         }
         sendJson(res, 200, libraryPayload());
+        return;
+      }
+      if (url.pathname === '/api/cast-address' && req.method === 'GET') {
+        if (!authorized(req, url, config)) {
+          sendJson(res, 401, { error: 'Sign in required.' });
+          return;
+        }
+        sendJson(res, 200, { urls: castUrls(config.port) });
         return;
       }
       if (url.pathname === '/api/rescan' && req.method === 'POST') {

@@ -3,7 +3,9 @@ import type { PlayHistoryEntry, RepeatMode, Song } from '../types';
 import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Shuffle, Repeat, Repeat1, ListPlus, SlidersHorizontal, Download, Check, Loader2 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { PhoneShare } from './PhoneShare';
+import { CastButton } from './CastButton';
 import { setMediaActionHandler, setMediaMetadata, setMediaPosition } from '../lib/mediaSession';
+import { castLoad, castSeek, castSetPlaying, contentTypeFor, onCastEnded, startCast, useCast } from '../lib/cast';
 
 interface PlaylistItem {
   id: string;
@@ -41,6 +43,8 @@ interface PlayerProps {
   keepState?: 'available' | 'kept' | 'saving';
   onToggleKeep?: () => void;
   resolveAudioUrl?: (song: Song) => Promise<{ url: string; revoke: boolean }>;
+  /** A URL a Chromecast can fetch for this song, or null when only this device has it. */
+  resolveCastUrl?: (song: Song) => Promise<string | null>;
   onLibraryUnavailable?: (libraryId: string) => void;
   /** Set when the current song's local copy has finished saving. The player fades from the stream to it. */
   localReady?: { songId: string; at: number } | null;
@@ -103,6 +107,7 @@ export function Player({
   keepState,
   onToggleKeep,
   resolveAudioUrl,
+  resolveCastUrl,
   onLibraryUnavailable,
   localReady,
   transportSlot,
@@ -121,6 +126,14 @@ export function Player({
   const resumeAtRef = useRef<number | null>(null);
   const isPlayingRef = useRef(isPlaying);
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  // While casting, the Chromecast plays the song and both audio elements stay paused.
+  const cast = useCast();
+  const castingRef = useRef(false);
+  /** Song now loaded on the Chromecast. */
+  const castSongRef = useRef<string | null>(null);
+  const [castNote, setCastNote] = useState('');
+  useEffect(() => { startCast(); }, []);
+  useEffect(() => { castingRef.current = cast.connected; }, [cast.connected]);
   useEffect(() => { if (!audioRef.current) audioRef.current = audioARef.current; }, []);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const eqFiltersRef = useRef<BiquadFilterNode[]>([]);
@@ -148,6 +161,12 @@ export function Player({
   useEffect(() => {
     if (!seekRef) return;
     seekRef.current = (time: number) => {
+      if (castingRef.current) {
+        castSeek(time);
+        setCurrentTime(time);
+        currentTimeRef.current = time;
+        return;
+      }
       if (audioRef.current) {
         audioRef.current.currentTime = time;
         setCurrentTime(time);
@@ -231,6 +250,7 @@ export function Player({
     const ctx = audioCtxRef.current;
     if (!localReady || !song || localReady.songId !== song.id || !from || !to || !resolveAudioUrl) return;
     if (from.src.startsWith('blob:')) return; // Already playing a local file.
+    if (castingRef.current) return; // The Chromecast streams it; the next local play uses the saved copy.
     const job = { songId: song.id, cancelled: false };
     if (handoffRef.current) handoffRef.current.cancelled = true;
     handoffRef.current = job;
@@ -347,7 +367,7 @@ export function Player({
         if (retryRef.current !== retry) return;
         element.src = resolved.url;
         element.load();
-        if (isPlayingRef.current) element.play().catch(() => { /* the error event retries */ });
+        if (isPlayingRef.current && !castingRef.current) element.play().catch(() => { /* the error event retries */ });
       } catch {
         retryStream('could not resolve');
       }
@@ -408,7 +428,7 @@ export function Player({
         }
         audioRef.current.volume = volume;
         if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
-        if (isPlaying) audioRef.current.play().catch(console.error);
+        if (isPlaying && !castingRef.current) audioRef.current.play().catch(console.error);
       } catch (e) {
         console.error('Failed to load audio', e);
         if (song.source === 'remote' && song.libraryId && song.libraryId !== '0') onLibraryUnavailable?.(song.libraryId);
@@ -424,6 +444,10 @@ export function Player({
   }, [currentSong?.id, currentSong?.streamUrl]);
 
   useEffect(() => {
+    if (castingRef.current) {
+      castSetPlaying(isPlaying);
+      return;
+    }
     if (audioRef.current) {
       if (isPlaying) {
         if (audioCtxRef.current?.state === 'suspended') audioCtxRef.current.resume();
@@ -461,6 +485,13 @@ export function Player({
 
   useEffect(() => {
     const seekTo = (time: number) => {
+      if (castingRef.current) {
+        const t = Math.min(Math.max(time, 0), durationRef.current || time);
+        castSeek(t);
+        currentTimeRef.current = t;
+        setCurrentTime(t);
+        return;
+      }
       const element = audioRef.current;
       if (!element) return;
       const d = element.duration || durationRef.current;
@@ -477,14 +508,56 @@ export function Player({
       ['nexttrack', () => onNext()],
       ['previoustrack', () => onPrev()],
       ['seekto', (d) => { if (d.seekTime != null) seekTo(d.seekTime); }],
-      ['seekbackward', (d) => seekTo((audioRef.current?.currentTime ?? 0) - (d.seekOffset ?? 10))],
-      ['seekforward', (d) => seekTo((audioRef.current?.currentTime ?? 0) + (d.seekOffset ?? 10))],
+      ['seekbackward', (d) => seekTo(currentTimeRef.current - (d.seekOffset ?? 10))],
+      ['seekforward', (d) => seekTo(currentTimeRef.current + (d.seekOffset ?? 10))],
     ];
     for (const [action, handler] of handlers) setMediaActionHandler(action, handler);
     return () => {
       for (const [action] of handlers) setMediaActionHandler(action, null);
     };
   }, [onNext, onPrev, setIsPlaying]);
+
+  // ── Chromecast ───────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!cast.connected) {
+      setCastNote('');
+      if (castSongRef.current) {
+        // Back from the Chromecast: carry on here from where it was.
+        castSongRef.current = null;
+        const element = audioRef.current;
+        if (element?.getAttribute('src')) {
+          element.currentTime = currentTimeRef.current;
+          setActiveGain(1);
+          if (isPlayingRef.current) element.play().catch(console.error);
+        }
+      }
+      return;
+    }
+    cancelHandoff();
+    audioARef.current?.pause();
+    audioBRef.current?.pause();
+    if (!currentSong || castSongRef.current === currentSong.id) return;
+    // A new song starts at 0. The first song carries on from where this device was.
+    void loadOnCast(currentSong, currentTimeRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cast.connected, currentSong?.id]);
+
+  // The Chromecast reports its position; the progress bar and time follow it.
+  useEffect(() => {
+    if (!cast.connected || !currentSong || castSongRef.current !== currentSong.id) return;
+    currentTimeRef.current = cast.currentTime;
+    setCurrentTime(cast.currentTime);
+    if (cast.duration > 0 && cast.duration !== durationRef.current) {
+      durationRef.current = cast.duration;
+      setDuration(cast.duration);
+    }
+    const now = Date.now();
+    if (now - lastNotifyRef.current > 500) {
+      lastNotifyRef.current = now;
+      onTimeUpdate?.(cast.currentTime, durationRef.current);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cast.currentTime, cast.duration, cast.connected]);
 
   // ── Playback event handlers ────────────────────────────────────────────────
   const isActive = (e: React.SyntheticEvent<HTMLAudioElement>) => e.currentTarget === audioRef.current;
@@ -519,6 +592,12 @@ export function Player({
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const t = Number(e.target.value);
+    if (castingRef.current) {
+      castSeek(t);
+      currentTimeRef.current = t;
+      setCurrentTime(t);
+      return;
+    }
     if (audioRef.current) {
       audioRef.current.currentTime = t;
       setCurrentTime(t);
@@ -530,6 +609,33 @@ export function Player({
     setVolume(Number(e.target.value));
     setMuted(false);
   };
+
+  const loadOnCast = useCallback(async (song: Song, startAt: number) => {
+    castSongRef.current = song.id;
+    if (!resolveCastUrl) return;
+    const url = await resolveCastUrl(song);
+    if (castSongRef.current !== song.id || !castingRef.current) return;
+    if (!url) {
+      setCastNote('Only on this device, so it can\'t play on the Chromecast');
+      return;
+    }
+    setCastNote('');
+    try {
+      await castLoad({
+        url,
+        contentType: contentTypeFor(song.remoteId || song.id),
+        title: song.title,
+        artist: song.artist,
+        album: song.album,
+        artworkUrl: albumArtworkUrl,
+        startAt,
+        autoplay: isPlayingRef.current,
+      });
+    } catch (error) {
+      console.warn('Chromecast load failed:', error);
+      if (castSongRef.current === song.id) setCastNote('The Chromecast could not play this song');
+    }
+  }, [resolveCastUrl, albumArtworkUrl]);
 
   // ── Session reporting ──────────────────────────────────────────────────────
   const reportActiveSession = useCallback((listenedSeconds?: number) => {
@@ -552,6 +658,18 @@ export function Player({
   const handleTrackEnded = useCallback((e?: React.SyntheticEvent<HTMLAudioElement>) => {
     if (e && e.currentTarget !== audioRef.current) return;
     reportActiveSession(durationRef.current || currentTimeRef.current);
+    if (repeatMode === 'one' && currentSong && castingRef.current) {
+      currentTimeRef.current = 0;
+      setCurrentTime(0);
+      activeSessionRef.current = {
+        songId: currentSong.id,
+        playedAt: Date.now(),
+        songDuration: durationRef.current || currentSong.duration || 0,
+        reported: false,
+      };
+      void loadOnCast(currentSong, 0);
+      return;
+    }
     if (repeatMode === 'one' && currentSong && audioRef.current) {
       audioRef.current.currentTime = 0;
       currentTimeRef.current = 0;
@@ -566,7 +684,11 @@ export function Player({
       return;
     }
     onTrackEnd?.();
-  }, [currentSong, onTrackEnd, repeatMode, reportActiveSession]);
+  }, [currentSong, onTrackEnd, repeatMode, reportActiveSession, loadOnCast]);
+
+  const trackEndedRef = useRef(handleTrackEnded);
+  useEffect(() => { trackEndedRef.current = handleTrackEnded; }, [handleTrackEnded]);
+  useEffect(() => onCastEnded(() => trackEndedRef.current()), []);
 
   useEffect(() => {
     const prev = activeSessionRef.current;
@@ -643,6 +765,7 @@ export function Player({
           <Shuffle size={22} />
         </button>
         <PhoneShare />
+        <CastButton size={22} className="w-11 h-11 flex items-center justify-center rounded-full transition" />
       </div>
       <div className="flex items-center gap-3">
         <button type="button" className="w-14 h-14 flex items-center justify-center rounded-full text-gray-700 active:bg-gray-200 dark:text-gray-200 dark:active:bg-gray-800 transition" onClick={onPrev} title="Previous" aria-label="Previous">
@@ -696,6 +819,7 @@ export function Player({
         <Shuffle size={20} />
       </button>
       <PhoneShare />
+      <CastButton className="p-1.5 rounded transition" />
       <button
         onClick={() => onRepeatModeChange?.(repeatMode === 'context' ? 'off' : 'context')}
         className={`p-1.5 rounded transition ${repeatMode === 'context' ? 'text-blue-600 dark:text-blue-400 bg-blue-500/20' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white'}`}
@@ -767,6 +891,11 @@ export function Player({
 
               <div className="absolute bottom-1 left-14 text-[10px] text-gray-500">{fmt(currentTime)}</div>
               <div className="absolute bottom-1 right-4 text-[10px] text-gray-500">-{fmt(duration - currentTime)}</div>
+              {cast.connected && (
+                <div className={`absolute bottom-1 left-1/2 -translate-x-1/2 max-w-[50%] truncate text-[10px] ${castNote ? 'text-amber-600 dark:text-amber-400' : 'text-blue-600 dark:text-blue-400'}`}>
+                  {castNote || `On ${cast.deviceName || 'Chromecast'}`}
+                </div>
+              )}
 
               {keepState && (
                 <button
