@@ -249,7 +249,11 @@ export async function castLoad(input: {
   wantPlaying = null;
   try {
     // Resolves with an error code on some versions of the library, and rejects with one on others.
-    const result = await session.loadMedia(request);
+    // A Chromecast that can't reach the address can take a long time to say so.
+    const result = await Promise.race([
+      session.loadMedia(request),
+      new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('timed out')), 10000)),
+    ]);
     if (result) throw new Error(String((result as { code?: string }).code ?? result));
     // Some speakers accept the song and only then find they can't fetch it.
     await startedPlaying();
@@ -261,7 +265,7 @@ export async function castLoad(input: {
 }
 
 /** Waits until the Chromecast is playing (or paused on) the song it was sent. */
-function startedPlaying(timeoutMs = 15000): Promise<void> {
+function startedPlaying(timeoutMs = 10000): Promise<void> {
   return new Promise((resolve, reject) => {
     const check = () => {
       const playerState = player?.playerState;
