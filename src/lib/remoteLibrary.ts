@@ -158,13 +158,13 @@ export function streamUrlFor(session: RemoteSession, songId: string): string {
 }
 
 /**
- * Stream URLs for a Chromecast to try, best first. An https address comes first: newer
- * Chromecasts refuse plain http audio, and a Tailscale name works for them once Funnel
- * makes it public. Then the library's home-network addresses, which it reports itself.
+ * Stream URLs for a Chromecast to try, best first. The library's home-network addresses
+ * come first, since a Chromecast can't use Tailscale. Then the address this device uses,
+ * which reaches it only when Funnel makes a Tailscale name public.
  */
 export async function castStreamUrlsFor(session: RemoteSession, songId: string): Promise<string[]> {
   const own = streamUrlFor(session, songId);
-  const urls = own.startsWith('https:') ? [own] : [];
+  const urls: string[] = [];
   try {
     const res = await fetch(apiUrl(session.baseUrl, '/api/cast-address'), {
       headers: { Authorization: `Bearer ${session.token}` },

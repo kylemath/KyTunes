@@ -131,6 +131,8 @@ export function Player({
   const castingRef = useRef(false);
   /** Song now loaded on the Chromecast. */
   const castSongRef = useRef<string | null>(null);
+  /** The address the Chromecast last played from. Tried first for the next song. */
+  const castOriginRef = useRef('');
   const [castNote, setCastNote] = useState('');
   useEffect(() => { startCast(); }, []);
   useEffect(() => { castingRef.current = cast.connected; }, [cast.connected]);
@@ -623,9 +625,11 @@ export function Player({
       return;
     }
     setCastNote(`Sending to ${cast.deviceName || 'the Chromecast'}…`);
-    // Try each address until the Chromecast can fetch one.
+    // Try each address until the Chromecast can fetch one, starting with the one that worked last.
+    const originOf = (url: string) => { try { return new URL(url).origin; } catch { return ''; } };
+    const ordered = [...urls].sort((a, b) => Number(originOf(b) === castOriginRef.current) - Number(originOf(a) === castOriginRef.current));
     const failures: string[] = [];
-    for (const url of urls) {
+    for (const url of ordered) {
       let host = url;
       try { host = new URL(url).host; } catch { /* shown as is */ }
       try {
@@ -639,6 +643,7 @@ export function Player({
           startAt,
           autoplay,
         });
+        castOriginRef.current = originOf(url);
         if (castSongRef.current === song.id) setCastNote('');
         return;
       } catch (error) {
