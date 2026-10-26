@@ -7,7 +7,11 @@ import { useSyncExternalStore } from 'react';
 const SDK_URL = 'https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1';
 
 // ── The few pieces of the Cast library the player uses ───────────────────────
-interface CastMediaSession { idleReason?: string | null }
+interface CastMediaSession {
+  idleReason?: string | null;
+  play(request: unknown, ok: () => void, fail: (error: unknown) => void): void;
+  pause(request: unknown, ok: () => void, fail: (error: unknown) => void): void;
+}
 interface CastSession {
   getCastDevice(): { friendlyName: string };
   getMediaSession(): CastMediaSession | null;
@@ -31,7 +35,6 @@ interface RemotePlayerLike {
 }
 interface RemotePlayerControllerLike {
   addEventListener(type: string, handler: (event: { field: string; value: unknown }) => void): void;
-  playOrPause(): void;
   seek(): void;
 }
 interface CastFramework {
@@ -50,6 +53,8 @@ interface ChromeCast {
     MediaInfo: new (url: string, contentType: string) => { metadata?: unknown; streamType?: string };
     MusicTrackMediaMetadata: new () => { title?: string; artist?: string; albumName?: string; images?: unknown[] };
     LoadRequest: new (media: unknown) => { currentTime?: number; autoplay?: boolean };
+    PlayRequest: new () => unknown;
+    PauseRequest: new () => unknown;
   };
 }
 declare global {
@@ -89,6 +94,11 @@ let context: CastContextLike | null = null;
 let player: RemotePlayerLike | null = null;
 let controller: RemotePlayerControllerLike | null = null;
 let started = false;
+/** True from sending a song until the Chromecast starts or fails to play it. */
+let loading = false;
+/** Play or pause asked for while a song was loading, applied once it has. */
+let wantPlaying: boolean | null = null;
+const playerStateListeners = new Set<() => void>();
 
 function update(patch: Partial<CastState>) {
   state = { ...state, ...patch };
@@ -133,7 +143,8 @@ function setup() {
   controller.addEventListener(framework.RemotePlayerEventType.ANY_CHANGE, (event) => {
     if (!player) return;
     if (event.field === 'currentTime') lastTime = player.currentTime;
-    if (event.field === 'playerState' && event.value === 'IDLE') {
+    if (event.field === 'playerState') for (const listener of playerStateListeners) listener();
+    if (event.field === 'playerState' && event.value === 'IDLE' && !loading) {
       // IDLE also follows a new load or a stop. Only a song that played out counts as ended.
       const reason = context?.getCurrentSession()?.getMediaSession()?.idleReason;
       const nearEnd = state.duration > 0 && lastTime >= state.duration - 1.5;
@@ -234,9 +245,45 @@ export async function castLoad(input: {
   request.currentTime = input.startAt;
   request.autoplay = input.autoplay;
   update({ currentTime: input.startAt, paused: !input.autoplay });
-  // Resolves with an error code on some versions of the library, and rejects with one on others.
-  const result = await session.loadMedia(request);
-  if (result) throw new Error(String((result as { code?: string }).code ?? result));
+  loading = true;
+  wantPlaying = null;
+  try {
+    // Resolves with an error code on some versions of the library, and rejects with one on others.
+    const result = await session.loadMedia(request);
+    if (result) throw new Error(String((result as { code?: string }).code ?? result));
+    // Some speakers accept the song and only then find they can't fetch it.
+    await startedPlaying();
+  } finally {
+    loading = false;
+  }
+  if (wantPlaying !== null && wantPlaying !== input.autoplay) castSetPlaying(wantPlaying);
+  wantPlaying = null;
+}
+
+/** Waits until the Chromecast is playing (or paused on) the song it was sent. */
+function startedPlaying(timeoutMs = 15000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      const playerState = player?.playerState;
+      if (playerState === 'PLAYING' || playerState === 'PAUSED') {
+        done();
+        resolve();
+      } else if (playerState === 'IDLE' && context?.getCurrentSession()?.getMediaSession()?.idleReason === 'ERROR') {
+        done();
+        reject(new Error('could not fetch the audio'));
+      }
+    };
+    const timer = window.setTimeout(() => {
+      done();
+      reject(new Error('timed out'));
+    }, timeoutMs);
+    const done = () => {
+      window.clearTimeout(timer);
+      playerStateListeners.delete(check);
+    };
+    playerStateListeners.add(check);
+    check();
+  });
 }
 
 /** Readable text for an error from the Cast library, which is often a bare code. */
@@ -248,9 +295,19 @@ export function castErrorText(error: unknown): string {
   return [code, description].filter(Boolean).join(': ') || 'unknown error';
 }
 
+/** Plays or pauses the song on the Chromecast. Explicit requests, so a repeat never flips it. */
 export function castSetPlaying(playing: boolean) {
-  if (!player || !controller || !player.isMediaLoaded) return;
-  if (player.isPaused === playing) controller.playOrPause();
+  if (loading) {
+    wantPlaying = playing;
+    return;
+  }
+  const chromeCast = window.chrome?.cast;
+  const media = context?.getCurrentSession()?.getMediaSession();
+  if (!chromeCast || !media) return;
+  const fail = (error: unknown) => console.warn('Chromecast play/pause failed:', error);
+  if (playing) media.play(new chromeCast.media.PlayRequest(), () => {}, fail);
+  else media.pause(new chromeCast.media.PauseRequest(), () => {}, fail);
+  update({ paused: !playing });
 }
 
 export function castSeek(time: number) {
