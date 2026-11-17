@@ -12,6 +12,7 @@ import { Player } from './components/Player';
 import { Sidebar } from './components/Sidebar';
 import { Library } from './components/Library';
 import { Visualizer } from './components/Visualizer';
+import { useTabAudio } from './lib/tabAudio';
 import { SongDetailsPane } from './components/NowPlaying';
 import { ResizeHandle } from './components/ResizeHandle';
 import { Loader2 } from 'lucide-react';
@@ -104,6 +105,8 @@ function App() {
 
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [showVisualizer, setShowVisualizer] = useState(false);
+  // Sound shared from another browser tab (YouTube Music, say), for the visualizer.
+  const tabAudio = useTabAudio();
   const [showSongDetails, setShowSongDetails] = useState(false);
   const [isVizMaximized, setIsVizMaximized] = useState(false);
 
@@ -1270,6 +1273,7 @@ function App() {
         onPrev={prevSong}
         onTrackEnd={nextSong}
         onAnalyserReady={handleAnalyserReady}
+        sharedTab={tabAudio.status === 'live' ? { video: tabAudio.video, onStop: tabAudio.stop } : null}
         shuffleOn={shuffleOn}
         onShuffleToggle={() => setShuffleOn(s => !s)}
         repeatMode={repeatMode}
@@ -1431,6 +1435,7 @@ function App() {
             >
               <Visualizer
                 analyser={analyser}
+                tab={tabAudio}
                 isMaximized={isVizMaximized}
                 onMaximizeToggle={toggleVizMaximized}
               />

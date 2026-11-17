@@ -4,6 +4,7 @@ import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Shuffle, Repeat, 
 import { createPortal } from 'react-dom';
 import { PhoneShare } from './PhoneShare';
 import { CastButton } from './CastButton';
+import { SharedTabNowPlaying } from './SharedTabNowPlaying';
 import { setMediaActionHandler, setMediaMetadata, setMediaPosition } from '../lib/mediaSession';
 import { castErrorText, castLoad, castSeek, castSetPlaying, contentTypeFor, onCastEnded, startCast, useCast } from '../lib/cast';
 
@@ -50,6 +51,8 @@ interface PlayerProps {
   localReady?: { songId: string; at: number } | null;
   /** On phones, the transport controls render here (a bar at the bottom of the screen). */
   transportSlot?: HTMLElement | null;
+  /** Set while another tab's sound is shared for the visualizer. Now Playing shows that tab. */
+  sharedTab?: { video: MediaStreamTrack | null; onStop: () => void } | null;
 }
 
 /** Length of the stream-to-local crossfade, in seconds. */
@@ -111,6 +114,7 @@ export function Player({
   onLibraryUnavailable,
   localReady,
   transportSlot,
+  sharedTab,
 }: PlayerProps) {
   // Two audio elements so the player can crossfade from the stream to the local copy.
   // audioRef always points at the one being heard.
@@ -879,7 +883,9 @@ export function Player({
       {/* ── Center LCD ── */}
       <div className="min-w-0 w-full overflow-hidden">
         <div className="bg-[#e4e4e4] dark:bg-[#282828] border border-gray-300 dark:border-black rounded w-full h-14 flex items-center px-2 relative overflow-hidden shadow-inner">
-          {currentSong ? (
+          {sharedTab ? (
+            <SharedTabNowPlaying video={sharedTab.video} onStop={sharedTab.onStop} />
+          ) : currentSong ? (
             <>
               {/* Album art thumbnail */}
               <div className="shrink-0 w-10 h-10 rounded overflow-hidden bg-gray-300 dark:bg-gray-700 mr-2">

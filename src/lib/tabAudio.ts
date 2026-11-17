@@ -24,6 +24,8 @@ export function useTabAudio() {
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [note, setNote] = useState('');
   const [label, setLabel] = useState('');
+  /** The shared tab's picture, kept at a low frame rate so Now Playing can show its player bar. */
+  const [video, setVideo] = useState<MediaStreamTrack | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
 
@@ -33,6 +35,7 @@ export function useTabAudio() {
     void ctxRef.current?.close().catch(() => {});
     ctxRef.current = null;
     setAnalyser(null);
+    setVideo(null);
     setLabel('');
     setStatus('idle');
   }, []);
@@ -47,8 +50,9 @@ export function useTabAudio() {
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
-        // Chrome only offers tab audio alongside video. The video is dropped right away.
-        video: true,
+        // Chrome only offers tab audio alongside video. A couple of frames a second is
+        // plenty to show the tab's player bar in Now Playing.
+        video: { frameRate: { ideal: 2, max: 5 } },
         audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
         // Chrome hints: start on the Tabs list, leave this window out, keep the tab audible.
         preferCurrentTab: false,
@@ -68,7 +72,7 @@ export function useTabAudio() {
     }
 
     const audio = stream.getAudioTracks();
-    stream.getVideoTracks().forEach((t) => t.stop());
+    const picture = stream.getVideoTracks()[0] ?? null;
     if (audio.length === 0) {
       stream.getTracks().forEach((t) => t.stop());
       setStatus('idle');
@@ -99,15 +103,18 @@ export function useTabAudio() {
       if (streamRef.current === stream) stop();
     });
     setLabel(audio[0].label || 'Another tab');
+    setVideo(picture);
     setAnalyser(node);
     setStatus('live');
   }, [stop]);
 
-  // Stop sharing when the visualizer closes.
+  // Stop sharing if the app unmounts.
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     void ctxRef.current?.close().catch(() => {});
   }, []);
 
-  return { status, analyser, note, label, start, stop, clearNote: () => setNote('') };
+  return { status, analyser, video, note, label, start, stop, clearNote: () => setNote('') };
 }
+
+export type TabAudio = ReturnType<typeof useTabAudio>;

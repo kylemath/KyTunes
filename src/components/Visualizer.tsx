@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Play as PlayIcon, Zap, Maximize2, Minimize2, Code2, MonitorSpeaker, X } from 'lucide-react';
-import { tabAudioSupported, useTabAudio } from '../lib/tabAudio';
+import { tabAudioSupported, type TabAudio } from '../lib/tabAudio';
 import { DEFAULT_SKETCH, PRESET_SKETCHES } from '../lib/defaultSketches';
 import { CodeEditor } from './CodeEditor';
 import { ResizeHandle } from './ResizeHandle';
@@ -12,6 +12,8 @@ interface VisualizerProps {
   analyser: AnalyserNode | null;
   isMaximized?: boolean;
   onMaximizeToggle?: () => void;
+  /** Sound shared from another tab. While live, the sketches react to it instead of the player. */
+  tab: TabAudio;
 }
 
 interface AudioData {
@@ -21,9 +23,7 @@ interface AudioData {
   bpm: number;
 }
 
-export function Visualizer({ analyser: playerAnalyser, isMaximized = false, onMaximizeToggle }: VisualizerProps) {
-  // While another tab is shared, the sketches react to that tab instead of the player.
-  const tab = useTabAudio();
+export function Visualizer({ analyser: playerAnalyser, isMaximized = false, onMaximizeToggle, tab }: VisualizerProps) {
   const canShareTab = tabAudioSupported();
   const analyser = tab.analyser ?? playerAnalyser;
   const visualizerRef = useRef<HTMLDivElement>(null);
