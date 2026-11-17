@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Play as PlayIcon, Zap, Maximize2, Minimize2, Code2 } from 'lucide-react';
+import { Play as PlayIcon, Zap, Maximize2, Minimize2, Code2, MonitorSpeaker, X } from 'lucide-react';
+import { tabAudioSupported, type TabAudio } from '../lib/tabAudio';
 import { DEFAULT_SKETCH, PRESET_SKETCHES } from '../lib/defaultSketches';
 import { CodeEditor } from './CodeEditor';
 import { ResizeHandle } from './ResizeHandle';
@@ -11,6 +12,8 @@ interface VisualizerProps {
   analyser: AnalyserNode | null;
   isMaximized?: boolean;
   onMaximizeToggle?: () => void;
+  /** Sound shared from another tab. While live, the sketches react to it instead of the player. */
+  tab: TabAudio;
 }
 
 interface AudioData {
@@ -20,7 +23,9 @@ interface AudioData {
   bpm: number;
 }
 
-export function Visualizer({ analyser, isMaximized = false, onMaximizeToggle }: VisualizerProps) {
+export function Visualizer({ analyser: playerAnalyser, isMaximized = false, onMaximizeToggle, tab }: VisualizerProps) {
+  const canShareTab = tabAudioSupported();
+  const analyser = tab.analyser ?? playerAnalyser;
   const visualizerRef = useRef<HTMLDivElement>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const p5InstanceRef = useRef<any>(null);
@@ -269,6 +274,31 @@ export function Visualizer({ analyser, isMaximized = false, onMaximizeToggle }: 
           Visualizer
         </div>
         <div className="flex items-center gap-2">
+          {canShareTab && (
+            tab.status === 'live' ? (
+              <button
+                type="button"
+                onClick={tab.stop}
+                className="inline-flex max-w-[16rem] items-center gap-1 px-2 py-1 text-xs rounded border border-green-500 text-green-700 dark:text-green-400 bg-green-500/10 hover:bg-green-500/20 transition-colors"
+                title={`Visualizing ${tab.label}. Click to stop.`}
+              >
+                <MonitorSpeaker size={12} className="shrink-0" />
+                <span className="truncate">Tab audio</span>
+                <X size={12} className="shrink-0" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void tab.start()}
+                disabled={tab.status === 'picking'}
+                className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800 transition-colors disabled:opacity-60"
+                title='Visualize sound from another tab, like YouTube Music. Pick the tab and turn on "Share tab audio".'
+              >
+                <MonitorSpeaker size={12} />
+                {tab.status === 'picking' ? 'Choosing…' : 'Visualize a tab'}
+              </button>
+            )
+          )}
           {!isMaximized && (
             <button
               type="button"
@@ -307,8 +337,16 @@ export function Visualizer({ analyser, isMaximized = false, onMaximizeToggle }: 
             style={isMaximized ? undefined : { height: canvasHeight }}
           >
             {!analyser && (
-              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-sm text-gray-600">
-                Play a song to activate
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-4 text-center text-sm text-gray-600">
+                {canShareTab ? 'Play a song, or visualize another tab, to activate' : 'Play a song to activate'}
+              </div>
+            )}
+            {tab.note && (
+              <div className="absolute inset-x-2 top-2 z-20 flex items-start gap-2 rounded-lg bg-gray-900/90 px-3 py-2 text-xs text-gray-100">
+                <span className="flex-1">{tab.note}</span>
+                <button type="button" onClick={tab.clearNote} className="shrink-0 text-gray-400 hover:text-white" title="Dismiss">
+                  <X size={12} />
+                </button>
               </div>
             )}
           </div>
